@@ -313,7 +313,7 @@ export default function LoginPage() {
         {/* Forgot Password */}
         <div style={{ textAlign: 'right', marginBottom: 24 }}>
           <Link 
-            href="/esqueci-senha" 
+            href="/esqueci-minha-senha" 
             style={{ 
               fontSize: 14, 
               color: 'var(--accent)', 

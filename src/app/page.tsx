@@ -39,11 +39,6 @@ const Icons = {
       <circle cx="12" cy="12" r="2"/>
     </svg>
   ),
-  Zap: () => (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <polygon points="13,2 3,14 12,14 11,22 21,10 12,10"/>
-    </svg>
-  ),
   Check: () => (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
       <polyline points="20,6 9,17 4,12"/>
@@ -53,11 +48,6 @@ const Icons = {
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <line x1="18" y1="6" x2="6" y2="18"/>
       <line x1="6" y1="6" x2="18" y2="18"/>
-    </svg>
-  ),
-  Star: () => (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-      <polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26"/>
     </svg>
   ),
   Shield: () => (
@@ -87,6 +77,36 @@ const Icons = {
       <path d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5"/>
     </svg>
   ),
+  Edit: () => (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+    </svg>
+  ),
+  Calendar: () => (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+      <line x1="16" y1="2" x2="16" y2="6"/>
+      <line x1="8" y1="2" x2="8" y2="6"/>
+      <line x1="3" y1="10" x2="21" y2="10"/>
+    </svg>
+  ),
+  Folder: () => (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+    </svg>
+  ),
+  Play: () => (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polygon points="5,3 19,12 5,21"/>
+    </svg>
+  ),
+  Clock: () => (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="10"/>
+      <polyline points="12,6 12,12 16,14"/>
+    </svg>
+  ),
 };
 
 // ============================================================================
@@ -105,22 +125,19 @@ function Navbar() {
     <nav className={`navbar ${scrolled ? 'scrolled' : ''}`}>
       <div className="container navbar-inner">
         <a href="#" className="navbar-logo">
-          <div style={{ 
-            width: 36, 
-            height: 36, 
-            borderRadius: 10, 
-            background: 'linear-gradient(135deg, #6366F1 0%, #7C3AED 100%)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center'
-          }}>
-            <Icons.Brain />
-          </div>
-          <span>Memorize<span className="text-gradient">AI</span></span>
+          <span style={{ 
+            fontSize: 24, 
+            fontWeight: 800, 
+            letterSpacing: '-0.02em',
+            background: 'linear-gradient(135deg, #6366F1 0%, #A855F7 50%, #EC4899 100%)',
+            WebkitBackgroundClip: 'text',
+            WebkitTextFillColor: 'transparent',
+            backgroundClip: 'text',
+          }}>Vimens</span>
         </a>
         
-        <Link href="/login" className="btn-primary navbar-cta">
-          Começar Grátis
+        <Link href="/cadastro" className="btn-primary navbar-cta">
+          Entrar
         </Link>
       </div>
     </nav>
@@ -132,6 +149,7 @@ function Navbar() {
 // ============================================================================
 function Hero() {
   const [flipped, setFlipped] = useState(false);
+  const exams = ['OAB', 'ENEM', 'Bancos', 'Receita', 'INSS', 'PF', 'TJ', 'TRF'];
 
   return (
     <section style={{ paddingTop: 120, paddingBottom: 80, position: 'relative', overflow: 'hidden' }}>
@@ -142,45 +160,55 @@ function Hero() {
           {/* Content */}
           <div className="hero-content">
             <div className="animate-fade-up" style={{ animationDelay: '0s' }}>
-              <span className="badge badge-urgent" style={{ marginBottom: 24 }}>
-                <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#F87171', animation: 'pulse 2s infinite' }} />
-                VAGAS LIMITADAS
+              <span className="badge badge-accent" style={{ marginBottom: 24 }}>
+                Acesso antecipado
               </span>
             </div>
             
             <h1 className="animate-fade-up" style={{ 
-              fontSize: 'clamp(32px, 6vw, 56px)', 
-              fontWeight: 800, 
-              lineHeight: 1.1,
+              fontSize: 'clamp(28px, 5.5vw, 52px)', 
+              fontWeight: 700, 
+              lineHeight: 1.15,
               letterSpacing: '-0.02em',
-              marginBottom: 20,
+              marginBottom: 16,
               animationDelay: '0.1s'
             }}>
               Aprovação em concursos é <span className="text-gradient">questão de método.</span>
             </h1>
             
             <p className="animate-fade-up" style={{ 
-              fontSize: 'clamp(16px, 2vw, 20px)', 
+              fontSize: 'clamp(16px, 2.2vw, 22px)', 
               color: 'var(--text-secondary)', 
+              marginBottom: 24,
+              lineHeight: 1.5,
+              animationDelay: '0.15s'
+            }}>
+              Seu PDF vira flashcards. Revisão no ritmo certo.
+            </p>
+            
+            <p className="animate-fade-up" style={{ 
+              fontSize: 'clamp(14px, 1.5vw, 16px)', 
+              color: 'var(--text-muted)', 
               marginBottom: 32,
               lineHeight: 1.6,
               animationDelay: '0.2s'
             }}>
-              Flashcards inteligentes com IA. Envie seu PDF e receba cards prontos para estudar.
+              Envie seu PDF. O Vimens gera flashcards. Você aprova e ajusta antes de estudar. As revisões se adaptam aos seus acertos e erros.
             </p>
             
             <div className="animate-fade-up" style={{ 
               display: 'flex', 
               flexDirection: 'column',
-              gap: 12,
-              marginBottom: 32,
+              gap: 10,
+              marginBottom: 28,
               animationDelay: '0.3s'
             }}>
-              <Link href="/login" className="btn-primary">
+              <Link href="/cadastro" className="btn-primary">
                 <Icons.Rocket />
                 Começar Grátis
               </Link>
-              <Link href="/login" className="btn-secondary">
+              <Link href="/demo" className="btn-secondary">
+                <Icons.Play />
                 Ver Demonstração
               </Link>
             </div>
@@ -188,35 +216,23 @@ function Hero() {
             <div className="animate-fade-up" style={{ 
               display: 'flex', 
               alignItems: 'center', 
-              gap: 12,
+              gap: 6,
               justifyContent: 'center',
+              flexWrap: 'wrap',
               animationDelay: '0.4s'
             }}>
-              <div style={{ display: 'flex' }}>
-                {['A', 'B', 'C', 'D'].map((l, i) => (
-                  <div key={i} style={{
-                    width: 32,
-                    height: 32,
-                    borderRadius: 8,
-                    background: 'linear-gradient(135deg, #6366F1 0%, #7C3AED 100%)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    fontSize: 12,
-                    fontWeight: 600,
-                    marginLeft: i > 0 ? -8 : 0,
-                    border: '2px solid var(--bg-base)'
-                  }}>
-                    {l}
-                  </div>
-                ))}
-              </div>
-              <div className="stars">
-                {[1,2,3,4,5].map(i => <Icons.Star key={i} />)}
-              </div>
-              <span style={{ fontSize: 14, color: 'var(--text-secondary)' }}>
-                <strong style={{ color: 'var(--text-primary)' }}>+2.847</strong> aprovam
-              </span>
+              <span style={{ fontSize: 12, color: 'var(--text-muted)', marginRight: 2 }}>Feito para</span>
+              {exams.map((e, i) => (
+                <span key={i} style={{ 
+                  fontSize: 11, 
+                  color: 'var(--text-secondary)',
+                  padding: '3px 7px',
+                  background: 'var(--bg-muted)',
+                  borderRadius: 4,
+                }}>
+                  {e}
+                </span>
+              ))}
             </div>
           </div>
           
@@ -277,19 +293,178 @@ function Hero() {
 }
 
 // ============================================================================
-// EXAMS
+// HOW IT WORKS
 // ============================================================================
-function Exams() {
-  const exams = ['OAB', 'ENEM', 'CAIXA', 'Banco do Brasil', 'Receita Federal', 'INSS', 'PF', 'TJ/TRF'];
+function HowItWorks() {
+  const steps = [
+    { num: '01', title: 'Envie seu material', desc: 'PDF, texto ou anotações. Qualquer conteúdo que você queira memorizar.' },
+    { num: '02', title: 'Gere e aprove os cards', desc: 'O Vimens cria os flashcards. Você edita, aprova ou descarta antes de estudar.' },
+    { num: '03', title: 'Revise todo dia', desc: 'O sistema agenda as próximas revisões com base nos seus acertos e erros.' },
+  ];
+
+  return (
+    <section className="section" style={{ background: 'var(--bg-raised)' }} id="how">
+      <div className="container">
+        <div style={{ textAlign: 'center', marginBottom: 48 }}>
+          <span className="badge badge-accent" style={{ marginBottom: 16 }}>Como Funciona</span>
+          <h2 className="section-title">3 passos para <span className="text-gradient">memorizar de verdade</span></h2>
+        </div>
+        
+        <div className="grid-steps-3">
+          {steps.map((s, i) => (
+            <div key={i} style={{ textAlign: 'center' }}>
+              <div className="step-num animate-pulse-glow">{s.num}</div>
+              <h3 style={{ fontSize: 16, fontWeight: 600, marginBottom: 10, lineHeight: 1.3 }}>{s.title}</h3>
+              <p style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.6 }}>{s.desc}</p>
+            </div>
+          ))}
+        </div>
+        
+        <p style={{ textAlign: 'center', marginTop: 40, color: 'var(--text-muted)', fontSize: 13, lineHeight: 1.5 }}>
+          Revisão adaptativa com <strong style={{ color: 'var(--accent)' }}>FSRS V5</strong>. O sistema aprende com seu desempenho.
+        </p>
+      </div>
+    </section>
+  );
+}
+
+// ============================================================================
+// DEMO PREVIEW (VEJA NA PRÁTICA)
+// ============================================================================
+function DemoPreview() {
+  const [currentCard, setCurrentCard] = useState(0);
+  const [flipped, setFlipped] = useState(false);
+  const [nextReview, setNextReview] = useState('');
+  
+  const cards = [
+    { q: 'Qual o prazo decadencial para anular ato administrativo?', a: '5 anos', ref: 'Lei 9.784/99, Art. 54' },
+    { q: 'O que é a teoria da imprevisão?', a: 'Revisão contratual por fato superveniente', ref: 'CC, Art. 478' },
+    { q: 'Qual a idade mínima para ser Presidente?', a: '35 anos', ref: 'CF, Art. 14, §3º, VI, a' },
+  ];
+  
+  const handleRating = (rating: string) => {
+    const reviews: Record<string, string> = {
+      'Errei': '10 minutos',
+      'Difícil': '1 dia',
+      'Bom': '4 dias',
+      'Fácil': '10 dias',
+    };
+    setNextReview(reviews[rating]);
+    setTimeout(() => {
+      setFlipped(false);
+      setNextReview('');
+      setCurrentCard((c) => (c + 1) % cards.length);
+    }, 1500);
+  };
   
   return (
-    <section style={{ padding: '40px 0', borderTop: '1px solid var(--border)', borderBottom: '1px solid var(--border)', background: 'var(--bg-raised)' }}>
+    <section className="section" id="demo-preview">
       <div className="container">
-        <p style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: 14, marginBottom: 20 }}>
-          Preparação para os principais concursos
-        </p>
-        <div className="exam-track">
-          {exams.map(e => <span key={e} className="exam-pill">{e}</span>)}
+        <div style={{ textAlign: 'center', marginBottom: 48 }}>
+          <span className="badge badge-accent" style={{ marginBottom: 16 }}>
+            <Icons.Play />
+            Veja na Prática
+          </span>
+          <h2 className="section-title">Experimente <span className="text-gradient">sem criar conta</span></h2>
+          <p className="section-subtitle" style={{ margin: '0 auto' }}>
+            Clique no card, responda e veja como o sistema adapta suas revisões.
+          </p>
+        </div>
+        
+        <div style={{ maxWidth: 400, margin: '0 auto' }}>
+          <div 
+            className={`flip-card ${flipped ? 'flipped' : ''}`}
+            onClick={() => !nextReview && setFlipped(!flipped)}
+            style={{ aspectRatio: '4/3', cursor: nextReview ? 'default' : 'pointer' }}
+          >
+            <div className="flip-card-inner">
+              {/* Front */}
+              <div className="flip-card-front card-glow" style={{ padding: 32, display: 'flex', flexDirection: 'column' }}>
+                <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <p style={{ fontSize: 18, fontWeight: 500, textAlign: 'center', lineHeight: 1.5 }}>
+                    {cards[currentCard].q}
+                  </p>
+                </div>
+                <div style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
+                  <Icons.Tap /> Toque para ver resposta
+                </div>
+              </div>
+              
+              {/* Back */}
+              <div className="flip-card-back card" style={{ padding: 32, display: 'flex', flexDirection: 'column', background: 'var(--bg-overlay)' }}>
+                <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 8 }}>
+                  <p className="text-gradient" style={{ fontSize: 28, fontWeight: 700 }}>{cards[currentCard].a}</p>
+                  <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>{cards[currentCard].ref}</p>
+                </div>
+                
+                {nextReview ? (
+                  <div style={{ textAlign: 'center', padding: 16, background: 'var(--accent-muted)', borderRadius: 12 }}>
+                    <p style={{ fontSize: 14, color: 'var(--accent-hover)' }}>
+                      <Icons.Clock /> Próxima revisão: <strong>{nextReview}</strong>
+                    </p>
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button className="action-btn error" onClick={(e) => { e.stopPropagation(); handleRating('Errei'); }}>Errei</button>
+                    <button className="action-btn warning" onClick={(e) => { e.stopPropagation(); handleRating('Difícil'); }}>Difícil</button>
+                    <button className="action-btn success" onClick={(e) => { e.stopPropagation(); handleRating('Bom'); }}>Bom</button>
+                    <button className="action-btn success" onClick={(e) => { e.stopPropagation(); handleRating('Fácil'); }}>Fácil</button>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+          
+          <div style={{ textAlign: 'center', marginTop: 32 }}>
+            <Link href="/cadastro" className="btn-primary">
+              <Icons.Upload />
+              Começar grátis e importar meu PDF
+            </Link>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ============================================================================
+// EXAMS (PARA QUEM É)
+// ============================================================================
+function Exams() {
+  const tracks = [
+    { name: 'OAB', example: 'Prazo para recurso ordinário constitucional', routine: '30 min/dia', retention: '85%' },
+    { name: 'ENEM', example: 'Período do Brasil Colônia até a República', routine: '40 min/dia', retention: '80%' },
+    { name: 'Bancos', example: 'Taxa Selic e política monetária', routine: '25 min/dia', retention: '85%' },
+    { name: 'Receita Federal', example: 'Tributos e competência tributária', routine: '35 min/dia', retention: '90%' },
+    { name: 'INSS', example: 'Benefícios previdenciários', routine: '30 min/dia', retention: '85%' },
+    { name: 'PF', example: 'Direito Penal e Processual Penal', routine: '35 min/dia', retention: '90%' },
+    { name: 'TJ/TRF', example: 'Organização judiciária', routine: '40 min/dia', retention: '90%' },
+  ];
+  
+  return (
+    <section className="section" style={{ background: 'var(--bg-raised)' }} id="exams">
+      <div className="container">
+        <div style={{ textAlign: 'center', marginBottom: 48 }}>
+          <span className="badge badge-accent" style={{ marginBottom: 16 }}>Para Quem É</span>
+          <h2 className="section-title">Trilhas para <span className="text-gradient">sua prova</span></h2>
+          <p className="section-subtitle" style={{ margin: '0 auto' }}>
+            Organize por matéria. O scheduler se adapta ao seu histórico.
+          </p>
+        </div>
+        
+        <div className="grid-exams">
+          {tracks.map((t, i) => (
+            <div key={i} className="card" style={{ padding: 24 }}>
+              <h3 style={{ fontSize: 20, fontWeight: 700, marginBottom: 12, color: 'var(--accent)' }}>{t.name}</h3>
+              <p style={{ fontSize: 14, color: 'var(--text-secondary)', marginBottom: 16, lineHeight: 1.5 }}>
+                Ex: "{t.example}"
+              </p>
+              <div style={{ display: 'flex', gap: 16, fontSize: 13, color: 'var(--text-muted)' }}>
+                <span>⏱ {t.routine}</span>
+                <span>🎯 {t.retention}</span>
+              </div>
+            </div>
+          ))}
         </div>
       </div>
     </section>
@@ -301,12 +476,12 @@ function Exams() {
 // ============================================================================
 function Features() {
   const features = [
-    { icon: <Icons.Upload />, title: 'PDF → Flashcards', desc: 'Envie qualquer material e nossa IA cria os cards automaticamente.', badge: 'IA' },
-    { icon: <Icons.Brain />, title: 'Repetição Espaçada', desc: 'Algoritmo SM-2 agenda revisões no momento ideal.', badge: 'Científico' },
-    { icon: <Icons.Target />, title: 'Plano de Ataque', desc: 'Errou? A IA identifica o tema e cria um plano personalizado.', badge: 'Exclusivo' },
-    { icon: <Icons.Chart />, title: 'Analytics Completo', desc: 'Acompanhe evolução, identifique lacunas e veja médias.', badge: 'Dados' },
-    { icon: <Icons.Sparkles />, title: 'Reformulação IA', desc: 'Cards reformulados de diferentes ângulos para fixação.', badge: 'Premium' },
-    { icon: <Icons.Zap />, title: 'Evolução Diária', desc: 'Todo dia, veja se houve evolução real com insights.', badge: 'Premium' },
+    { icon: <Icons.Upload />, title: 'Geração a partir do PDF', desc: 'Envie seu material e receba flashcards prontos para revisar.' },
+    { icon: <Icons.Edit />, title: 'Edição e aprovação', desc: 'Você edita, aprova ou descarta cada card antes de estudar.' },
+    { icon: <Icons.Brain />, title: 'Revisões adaptativas', desc: 'FSRS V5 agenda revisões com base nos seus acertos e erros.' },
+    { icon: <Icons.Target />, title: 'Metas de retenção', desc: 'Defina quanto quer lembrar: 80%, 85%, 90%. O sistema ajusta.' },
+    { icon: <Icons.Chart />, title: 'Estatísticas claras', desc: 'Veja sua evolução, identifique lacunas e acompanhe o progresso.' },
+    { icon: <Icons.Folder />, title: 'Organização por trilhas', desc: 'Separe por matéria, concurso ou tema. Encontre tudo rápido.' },
   ];
 
   return (
@@ -314,9 +489,9 @@ function Features() {
       <div className="container">
         <div style={{ textAlign: 'center', marginBottom: 48 }}>
           <span className="badge badge-accent" style={{ marginBottom: 16 }}>Recursos</span>
-          <h2 className="section-title">Tudo para <span className="text-gradient">dominar o conteúdo</span></h2>
+          <h2 className="section-title">Controle total sobre <span className="text-gradient">seu estudo</span></h2>
           <p className="section-subtitle" style={{ margin: '0 auto' }}>
-            Tecnologia de ponta para quem não aceita menos que a aprovação.
+            Nada de caixa preta. Você decide o que estudar e quando.
           </p>
         </div>
         
@@ -325,74 +500,11 @@ function Features() {
             <div key={i} className="card feature-card">
               <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
                 <div className="icon-box">{f.icon}</div>
-                <span className="badge badge-accent" style={{ fontSize: 10 }}>{f.badge}</span>
               </div>
               <h3>{f.title}</h3>
               <p>{f.desc}</p>
             </div>
           ))}
-        </div>
-      </div>
-    </section>
-  );
-}
-
-// ============================================================================
-// HOW IT WORKS
-// ============================================================================
-function HowItWorks() {
-  const steps = [
-    { num: '01', title: 'Envie seu Material', desc: 'PDFs, apostilas, resumos.' },
-    { num: '02', title: 'IA Processa', desc: 'Cards otimizados automaticamente.' },
-    { num: '03', title: 'Estude Inteligente', desc: 'Revisão no momento ideal.' },
-    { num: '04', title: 'Evolua Todo Dia', desc: 'Acompanhe seu progresso.' },
-  ];
-
-  return (
-    <section className="section" style={{ background: 'var(--bg-raised)' }} id="how">
-      <div className="container">
-        <div style={{ textAlign: 'center', marginBottom: 48 }}>
-          <span className="badge badge-accent" style={{ marginBottom: 16 }}>Como Funciona</span>
-          <h2 className="section-title">4 passos para a <span className="text-gradient">aprovação</span></h2>
-        </div>
-        
-        <div className="grid-steps">
-          {steps.map((s, i) => (
-            <div key={i} style={{ textAlign: 'center' }}>
-              <div className="step-num animate-pulse-glow">{s.num}</div>
-              <h3 style={{ fontSize: 18, fontWeight: 600, marginBottom: 8 }}>{s.title}</h3>
-              <p style={{ fontSize: 14, color: 'var(--text-secondary)' }}>{s.desc}</p>
-            </div>
-          ))}
-        </div>
-      </div>
-    </section>
-  );
-}
-
-// ============================================================================
-// STATS
-// ============================================================================
-function Stats() {
-  const stats = [
-    { value: '89%', label: 'Taxa de aprovação baseada em Ciência Cognitiva.' },
-    { value: '2.5M+', label: 'Cards otimizados automaticamente.' },
-    { value: '47min', label: 'Economizados/dia' },
-    { value: '4.9★', label: 'Avaliação média' },
-  ];
-
-  return (
-    <section className="section">
-      <div className="container">
-        <div className="card-glow" style={{ padding: 'clamp(32px, 5vw, 64px)', borderRadius: 24 }}>
-          <div className="grid-stats">
-            {stats.map((s, i) => (
-              <div key={i} style={{ textAlign: 'center' }}>
-                <p className="text-gradient" style={{ fontSize: 'clamp(32px, 5vw, 48px)', fontWeight: 800, marginBottom: 8 }}>{s.value}</p>
-                <p style={{ fontSize: 14, color: 'var(--text-secondary)' }}>{s.label}</p>
-              </div>
-            ))}
-          </div>
         </div>
       </div>
     </section>
@@ -414,7 +526,7 @@ function Pricing() {
         { text: 'Repetição espaçada', ok: true },
         { text: 'Analytics básico', ok: true },
         { text: 'Upload PDF', ok: false },
-        { text: 'Geração IA', ok: false },
+        { text: 'Geração de cards', ok: false },
       ],
       featured: false
     },
@@ -428,7 +540,7 @@ function Pricing() {
         { text: 'Repetição avançada', ok: true },
         { text: 'Analytics completo', ok: true },
         { text: 'Upload PDF', ok: true },
-        { text: 'Geração IA', ok: true },
+        { text: 'Geração de cards', ok: true },
       ],
       featured: true
     },
@@ -442,7 +554,7 @@ function Pricing() {
             <Icons.Crown />
             Planos
           </span>
-          <h2 className="section-title">Invista na sua <span className="text-gradient">aprovação</span></h2>
+          <h2 className="section-title">Simples e <span className="text-gradient">sem pegadinha</span></h2>
         </div>
         
         <div className="grid-pricing">
@@ -470,10 +582,10 @@ function Pricing() {
                 ))}
               </ul>
               
-              <button className={p.featured ? 'btn-primary' : 'btn-secondary'} style={{ width: '100%' }}>
-                {p.featured ? 'Assinar Premium' : 'Começar Grátis'}
+              <Link href="/cadastro" className={p.featured ? 'btn-primary' : 'btn-secondary'} style={{ width: '100%', textAlign: 'center' }}>
+                {p.featured ? 'Começar 7 dias grátis' : 'Começar Grátis'}
                 <Icons.ArrowRight />
-              </button>
+              </Link>
             </div>
           ))}
         </div>
@@ -481,50 +593,10 @@ function Pricing() {
         <div style={{ textAlign: 'center', marginTop: 40 }}>
           <div className="glass" style={{ display: 'inline-flex', alignItems: 'center', gap: 12, padding: '12px 24px', borderRadius: 100 }}>
             <Icons.Shield />
-            <span style={{ fontSize: 14, color: 'var(--text-secondary)' }}>7 dias de garantia incondicional</span>
+            <span style={{ fontSize: 14, color: 'var(--text-secondary)' }}>
+              7 dias grátis no Premium.
+            </span>
           </div>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-// ============================================================================
-// TESTIMONIALS
-// ============================================================================
-function Testimonials() {
-  const items = [
-    { name: 'Ana Carolina S.', role: 'Aprovada OAB', text: 'A sensação é de ter um professor particular 24h. A IA não só cria os cards, mas entende exatamente onde eu estou errando e reformula a pergunta.' },
-    { name: 'Ricardo M.', role: 'Aprovado CAIXA', text: 'Joguei um PDF de 500 páginas de Direito Administrativo e em 2 minutos tinha os flashcards prontos. O que eu levaria uma semana resumindo, fiz em alguns minutos.' },
-    { name: 'Juliana F.', role: 'ENEM 850+', text: 'O sistema de "lacunas de aprendizado" é assustadoramente preciso. Ele me mostrou que eu sabia tudo de Humanas, mas nada de Raciocínio Lógico. Mudou meu plano de estudo.' },
-  ];
-
-  return (
-    <section className="section">
-      <div className="container">
-        <div style={{ textAlign: 'center', marginBottom: 48 }}>
-          <span className="badge badge-accent" style={{ marginBottom: 16 }}>Depoimentos</span>
-          <h2 className="section-title">Quem usa, <span className="text-gradient">aprova</span></h2>
-        </div>
-        
-        <div className="grid-testimonials">
-          {items.map((t, i) => (
-            <div key={i} className="card testimonial-card">
-              <div className="stars">
-                {[1,2,3,4,5].map(j => <Icons.Star key={j} />)}
-              </div>
-              <p style={{ fontSize: 15, color: 'var(--text-secondary)', lineHeight: 1.6, flex: 1 }}>
-                &ldquo;{t.text}&rdquo;
-              </p>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 12, paddingTop: 20, borderTop: '1px solid var(--border)' }}>
-                <div className="avatar">{t.name[0]}</div>
-                <div>
-                  <p style={{ fontWeight: 600, fontSize: 14 }}>{t.name}</p>
-                  <p style={{ fontSize: 13, color: 'var(--success)' }}>{t.role}</p>
-                </div>
-              </div>
-            </div>
-          ))}
         </div>
       </div>
     </section>
@@ -536,29 +608,22 @@ function Testimonials() {
 // ============================================================================
 function CTA() {
   return (
-    <section className="section" style={{ background: 'var(--bg-raised)' }}>
+    <section className="section">
       <div className="container" style={{ textAlign: 'center', maxWidth: 600 }}>
-        <span className="badge badge-urgent" style={{ marginBottom: 24 }}>
-          <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#F87171', animation: 'pulse 2s infinite' }} />
-          Oferta por tempo limitado
-        </span>
-        
         <h2 className="section-title" style={{ marginBottom: 16 }}>
-          Sua aprovação está a <span className="text-gradient">um clique</span>
+          Pronto para <span className="text-gradient">começar</span>?
         </h2>
         
         <p style={{ color: 'var(--text-secondary)', marginBottom: 32, fontSize: 16 }}>
-          Junte-se à nova elite dos concursos. <span style={{ color: 'var(--warning)' }}>Não fique para trás.</span>
+          Importe seu primeiro PDF e veja os flashcards gerados em segundos.
         </p>
         
-        <Link href="/login" className="btn-primary" style={{ marginBottom: 24 }}>
+        <Link href="/cadastro" className="btn-primary" style={{ marginBottom: 24 }}>
           <Icons.Rocket />
-          Quero Começar Agora
+          Criar minha conta grátis
         </Link>
         
-        <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>
-          ✓ Sem cartão &nbsp; ✓ Cancele quando quiser &nbsp; ✓ 7 dias grátis
-        </p>
+        <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>✓ Cancele quando quiser</p>
       </div>
     </section>
   );
@@ -571,29 +636,26 @@ function Footer() {
   return (
     <footer className="footer">
       <div className="container footer-inner">
-        <a href="#" className="navbar-logo" style={{ fontSize: 18 }}>
-          <div style={{ 
-            width: 32, 
-            height: 32, 
-            borderRadius: 8, 
-            background: 'linear-gradient(135deg, #6366F1 0%, #7C3AED 100%)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center'
-          }}>
-            <Icons.Brain />
-          </div>
-          <span>Memorize<span className="text-gradient">AI</span></span>
+        <a href="/" className="navbar-logo" style={{ fontSize: 18 }}>
+          <span style={{ 
+            fontSize: 22, 
+            fontWeight: 800, 
+            letterSpacing: '-0.02em',
+            background: 'linear-gradient(135deg, #6366F1 0%, #A855F7 50%, #EC4899 100%)',
+            WebkitBackgroundClip: 'text',
+            WebkitTextFillColor: 'transparent',
+            backgroundClip: 'text',
+          }}>Vimens</span>
         </a>
         
         <div className="footer-links">
-          <a href="#">Termos</a>
-          <a href="#">Privacidade</a>
-          <a href="#">Contato</a>
+          <Link href="/termos">Termos</Link>
+          <Link href="/privacidade">Privacidade</Link>
+          <a href="mailto:suporte@vimens.app">Suporte</a>
         </div>
         
         <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>
-          © 2024 MemorizeAI
+          © 2025 Vimens
         </p>
       </div>
     </footer>
@@ -608,12 +670,11 @@ export default function Home() {
     <main style={{ minHeight: '100vh' }}>
       <Navbar />
       <Hero />
-      <Exams />
-      <Features />
       <HowItWorks />
-      <Stats />
+      <DemoPreview />
+      <Features />
+      <Exams />
       <Pricing />
-      <Testimonials />
       <CTA />
       <Footer />
     </main>

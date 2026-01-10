@@ -9,12 +9,12 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "MemorizeAI - Flashcards Inteligentes para Concurseiros",
+  title: "Vimens - Flashcards Inteligentes para Concurseiros",
   description: "A plataforma premium de flashcards com IA para quem leva aprovação a sério. OAB, ENEM, CAIXA e mais.",
-  keywords: ["flashcards", "concursos", "OAB", "ENEM", "CAIXA", "estudos", "memorização", "IA"],
-  authors: [{ name: "MemorizeAI" }],
+  keywords: ["flashcards", "concursos", "OAB", "ENEM", "CAIXA", "estudos", "memorização", "IA", "Vimens"],
+  authors: [{ name: "Vimens" }],
   openGraph: {
-    title: "MemorizeAI - Flashcards Inteligentes para Concurseiros",
+    title: "Vimens - Flashcards Inteligentes para Concurseiros",
     description: "A plataforma premium de flashcards com IA para quem leva aprovação a sério.",
     type: "website",
     locale: "pt_BR",

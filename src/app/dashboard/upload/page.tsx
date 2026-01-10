@@ -4,7 +4,6 @@ import { useState, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
-import { generateFlashcards } from '@/app/actions/generateFlashcards';
 import type { User } from '@supabase/supabase-js';
 
 // Generate unique ID
@@ -35,11 +34,6 @@ const Icons = {
       <polyline points="14,2 14,8 20,8"/>
     </svg>
   ),
-  Sparkles: () => (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/>
-    </svg>
-  ),
   Loader: () => (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ animation: 'spin 1s linear infinite' }}>
       <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
@@ -51,15 +45,9 @@ const Icons = {
       <polyline points="9,12 12,15 16,10"/>
     </svg>
   ),
-  X: () => (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <line x1="18" y1="6" x2="6" y2="18"/>
-      <line x1="6" y1="6" x2="18" y2="18"/>
-    </svg>
-  ),
 };
 
-type Step = 'upload' | 'processing' | 'naming' | 'complete';
+type Step = 'upload' | 'processing' | 'complete';
 
 export default function UploadPage() {
   const router = useRouter();
@@ -74,15 +62,9 @@ export default function UploadPage() {
   const [pdfText, setPdfText] = useState<string>('');
   const [extracting, setExtracting] = useState(false);
   
-  // Generation state
-  const [generating, setGenerating] = useState(false);
-  const [progress, setProgress] = useState(0);
+  // Processing state
   const [statusMessage, setStatusMessage] = useState('');
-  
-  // Deck state
-  const [deckTitle, setDeckTitle] = useState('');
-  const [generatedCards, setGeneratedCards] = useState<Array<{front: string; back: string}>>([]);
-  const [createdDeckId, setCreatedDeckId] = useState<string | null>(null);
+  const [progress, setProgress] = useState(0);
 
   useEffect(() => {
     const checkUser = async () => {
@@ -101,18 +83,101 @@ export default function UploadPage() {
     checkUser();
   }, [router]);
 
-  const extractTextFromPDF = async (pdfFile: File): Promise<string> => {
-    // Use pdf-parse on the server side via API route
-    const formData = new FormData();
-    formData.append('file', pdfFile);
+  // Get file extension
+  const getFileExtension = (filename: string): string => {
+    return filename.split('.').pop()?.toLowerCase() || 'pdf';
+  };
+
+  // Get content type for file
+  const getContentType = (ext: string): string => {
+    const types: Record<string, string> = {
+      pdf: 'application/pdf',
+      docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    };
+    return types[ext] || 'application/octet-stream';
+  };
+
+  // Upload document to Supabase Storage
+  const uploadToStorage = async (docFile: File, userId: string): Promise<{ sourceId: string; storagePath: string; fileType: string }> => {
+    const supabase = createClient();
+    const sourceId = generateId();
+    const ext = getFileExtension(docFile.name);
+    const storagePath = `${userId}/${sourceId}.${ext}`;
     
-    const response = await fetch('/api/extract-pdf', {
+    const { error: uploadError } = await supabase.storage
+      .from('pdfs')
+      .upload(storagePath, docFile, {
+        contentType: getContentType(ext),
+        upsert: false,
+      });
+    
+    if (uploadError) {
+      throw new Error(`Erro no upload: ${uploadError.message}`);
+    }
+    
+    return { sourceId, storagePath, fileType: ext };
+  };
+
+  // Create source record in database
+  const createSourceRecord = async (
+    sourceId: string, 
+    userId: string, 
+    filename: string, 
+    storagePath: string,
+    fileType: string = 'pdf'
+  ): Promise<void> => {
+    const supabase = createClient();
+    const now = Date.now();
+    
+    const { error } = await supabase
+      .from('sources')
+      .insert({
+        id: sourceId,
+        user_id: userId,
+        filename,
+        storage_path: storagePath,
+        file_type: fileType,
+        status: 'na_fila',
+        progress: 0,
+        created_at: now,
+        updated_at: now,
+      });
+    
+    if (error) {
+      throw new Error(`Erro ao criar registro: ${error.message}`);
+    }
+  };
+
+  // Process source locally via API
+  const processSourceLocally = async (sourceId: string, extractedText: string): Promise<void> => {
+    const response = await fetch('/api/process-source', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sourceId, extractedText }),
+    });
+    
+    const data = await response.json();
+    
+    if (!response.ok) {
+      throw new Error(data.error || 'Erro no processamento');
+    }
+    
+    console.log('[upload] Processing result:', data);
+  };
+
+  const extractTextFromDocument = async (docFile: File): Promise<string> => {
+    const formData = new FormData();
+    formData.append('file', docFile);
+    
+    const response = await fetch('/api/extract-document', {
       method: 'POST',
       body: formData,
     });
     
     if (!response.ok) {
-      throw new Error('Falha ao extrair texto do PDF');
+      const error = await response.json();
+      throw new Error(error.error || 'Falha ao extrair texto do documento');
     }
     
     const data = await response.json();
@@ -120,12 +185,15 @@ export default function UploadPage() {
   };
 
   const handleFileSelect = async (selectedFile: File) => {
-    if (!selectedFile.type.includes('pdf')) {
-      alert('Por favor, selecione um arquivo PDF.');
+    const validTypes = ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/vnd.openxmlformats-officedocument.presentationml.presentation'];
+    const ext = selectedFile.name.split('.').pop()?.toLowerCase();
+    const isValidType = validTypes.includes(selectedFile.type) || ['pdf', 'docx', 'pptx'].includes(ext || '');
+    
+    if (!isValidType) {
+      alert('Por favor, selecione um arquivo PDF, DOCX ou PPTX.');
       return;
     }
     
-    // Max 50MB para suportar PDFs grandes
     if (selectedFile.size > 50 * 1024 * 1024) {
       alert('O arquivo deve ter no máximo 50MB.');
       return;
@@ -135,17 +203,12 @@ export default function UploadPage() {
     setExtracting(true);
     
     try {
-      const text = await extractTextFromPDF(selectedFile);
+      const text = await extractTextFromDocument(selectedFile);
       setPdfText(text);
-      
-      // Auto-generate title from filename
-      const nameWithoutExt = selectedFile.name.replace('.pdf', '').replace(/_/g, ' ').replace(/-/g, ' ');
-      setDeckTitle(nameWithoutExt);
-      
       setExtracting(false);
     } catch (error) {
-      console.error('Error extracting PDF:', error);
-      alert('Erro ao ler o PDF. Tente outro arquivo.');
+      console.error('Error extracting document:', error);
+      alert('Erro ao ler o documento. Tente outro arquivo.');
       setFile(null);
       setExtracting(false);
     }
@@ -159,95 +222,42 @@ export default function UploadPage() {
     }
   };
 
-  const handleGenerate = async () => {
-    if (!pdfText || !user) return;
+  // Handle the simplified upload + processing flow
+  const handleUploadAndProcess = async () => {
+    if (!file || !user || !pdfText) return;
     
     setStep('processing');
-    setGenerating(true);
+    setStatusMessage('Enviando documento para o servidor...');
     setProgress(10);
-    setStatusMessage('Analisando o conteúdo do PDF...');
     
     try {
-      // Simulate progress
-      const progressInterval = setInterval(() => {
-        setProgress(prev => Math.min(prev + Math.random() * 15, 85));
-      }, 1000);
-      
+      // 1. Upload to Storage
+      const { sourceId, storagePath, fileType } = await uploadToStorage(file, user.id);
       setProgress(30);
-      setStatusMessage('Gerando flashcards com IA...');
+      setStatusMessage('Documento enviado! Criando registro...');
       
-      // Call server action
-      const cards = await generateFlashcards(pdfText);
+      // 2. Create source record
+      await createSourceRecord(sourceId, user.id, file.name, storagePath, fileType);
+      setProgress(50);
+      setStatusMessage('Processando texto do documento...');
       
-      clearInterval(progressInterval);
+      // 3. Process locally (create chunks)
+      await processSourceLocally(sourceId, pdfText);
       setProgress(100);
-      setStatusMessage('Flashcards gerados com sucesso!');
-      setGeneratedCards(cards);
+      setStatusMessage('Documento processado com sucesso!');
       
-      // Short delay before showing naming step
-      setTimeout(() => {
-        setStep('naming');
-        setGenerating(false);
-      }, 500);
-      
-    } catch (error) {
-      console.error('Error generating cards:', error);
-      alert('Erro ao gerar flashcards. Tente novamente.');
-      setStep('upload');
-      setGenerating(false);
-    }
-  };
-
-  const handleSaveDeck = async () => {
-    if (!deckTitle.trim() || !user || generatedCards.length === 0) return;
-    
-    setGenerating(true);
-    setStatusMessage('Salvando deck...');
-    
-    try {
-      const supabase = createClient();
-      const now = Date.now();
-      const deckId = generateId();
-      
-      // Create deck
-      const { error: deckError } = await supabase
-        .from('decks')
-        .insert({
-          id: deckId,
-          user_id: user.id,
-          title: deckTitle.trim(),
-          description: `Gerado automaticamente a partir de: ${file?.name}`,
-          created_at: now,
-          updated_at: now,
-        });
-      
-      if (deckError) throw deckError;
-      
-      // Create cards
-      const cardsToInsert = generatedCards.map(card => ({
-        id: generateId(),
-        deck_id: deckId,
-        front: card.front,
-        back: card.back,
-        step: 0,
-        created_at: now,
-        updated_at: now,
-      }));
-      
-      const { error: cardsError } = await supabase
-        .from('cards')
-        .insert(cardsToInsert);
-      
-      if (cardsError) throw cardsError;
-      
-      setCreatedDeckId(deckId);
+      // 4. Show success and redirect
       setStep('complete');
       
+      // Auto-redirect after 1.5 seconds
+      setTimeout(() => {
+        router.push('/dashboard/runs');
+      }, 1500);
+      
     } catch (error) {
-      console.error('Error saving deck:', error);
-      alert('Erro ao salvar deck. Tente novamente.');
-    } finally {
-      setGenerating(false);
+      console.error('Error in upload flow:', error);
+      alert(error instanceof Error ? error.message : 'Erro no upload');
+      setStep('upload');
     }
   };
 
@@ -258,7 +268,7 @@ export default function UploadPage() {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        background: 'var(--bg-base)',
+        background: '#0a0a0a',
       }}>
         <Icons.Loader />
         <style jsx global>{`
@@ -272,7 +282,7 @@ export default function UploadPage() {
   }
 
   return (
-    <div style={{ minHeight: '100vh', background: 'var(--bg-base)' }}>
+    <div style={{ minHeight: '100vh', background: '#0a0a0a', color: '#f4f4f5' }}>
       <style jsx global>{`
         @keyframes spin {
           from { transform: rotate(0deg); }
@@ -287,32 +297,35 @@ export default function UploadPage() {
       {/* Header */}
       <header style={{
         padding: '16px 24px',
-        borderBottom: '1px solid var(--border)',
+        borderBottom: '1px solid rgba(255,255,255,0.06)',
         display: 'flex',
         alignItems: 'center',
         gap: 16,
-        background: 'var(--bg-raised)',
+        background: 'rgba(15, 15, 15, 0.8)',
+        backdropFilter: 'blur(20px)',
+        WebkitBackdropFilter: 'blur(20px)',
       }}>
         <Link
-          href="/dashboard"
+          href="/dashboard/runs"
           style={{
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            width: 40,
-            height: 40,
-            borderRadius: 10,
-            background: 'var(--bg-muted)',
-            color: 'var(--text-secondary)',
+            width: 42,
+            height: 42,
+            borderRadius: 12,
+            background: 'rgba(255,255,255,0.04)',
+            border: '1px solid rgba(255,255,255,0.08)',
+            color: '#71717a',
             textDecoration: 'none',
           }}
         >
           <Icons.ArrowLeft />
         </Link>
         <div>
-          <h1 style={{ fontSize: 20, fontWeight: 700 }}>Criar Deck com IA</h1>
-          <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>
-            Faça upload de um PDF para gerar flashcards automaticamente
+          <h1 style={{ fontSize: 20, fontWeight: 700, letterSpacing: '-0.02em' }}>Upload de Documento</h1>
+          <p style={{ fontSize: 13, color: '#71717a', marginTop: 2 }}>
+            Adicione um novo documento para gerar conteúdo
           </p>
         </div>
       </header>
@@ -329,28 +342,28 @@ export default function UploadPage() {
               onDrop={handleDrop}
               onClick={() => fileInputRef.current?.click()}
               style={{
-                border: '2px dashed var(--border)',
+                border: '2px dashed rgba(255,255,255,0.1)',
                 borderRadius: 20,
                 padding: 48,
                 textAlign: 'center',
                 cursor: 'pointer',
                 transition: 'all 0.2s ease',
-                background: file ? 'rgba(99, 102, 241, 0.05)' : 'transparent',
-                borderColor: file ? 'var(--accent)' : 'var(--border)',
+                background: file ? 'rgba(34, 197, 94, 0.05)' : 'transparent',
+                borderColor: file ? '#22c55e' : 'rgba(255,255,255,0.1)',
               }}
             >
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".pdf"
+                accept=".pdf,.docx,.pptx"
                 onChange={(e) => e.target.files?.[0] && handleFileSelect(e.target.files[0])}
                 style={{ display: 'none' }}
               />
               
               {extracting ? (
-                <div style={{ color: 'var(--accent)' }}>
+                <div style={{ color: '#22c55e' }}>
                   <Icons.Loader />
-                  <p style={{ marginTop: 16 }}>Lendo PDF...</p>
+                  <p style={{ marginTop: 16 }}>Lendo documento...</p>
                 </div>
               ) : file ? (
                 <>
@@ -358,18 +371,18 @@ export default function UploadPage() {
                     width: 64,
                     height: 64,
                     borderRadius: 16,
-                    background: 'rgba(99, 102, 241, 0.15)',
+                    background: 'rgba(34, 197, 94, 0.15)',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
                     margin: '0 auto 16px',
-                    color: 'var(--accent)',
+                    color: '#22c55e',
                   }}>
                     <Icons.File />
                   </div>
                   <p style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>{file.name}</p>
-                  <p style={{ fontSize: 14, color: 'var(--text-muted)' }}>
-                    {(file.size / 1024 / 1024).toFixed(2)} MB • {pdfText.split(' ').length} palavras
+                  <p style={{ fontSize: 14, color: '#71717a' }}>
+                    {(file.size / 1024 / 1024).toFixed(2)} MB • {pdfText.split(' ').length.toLocaleString()} palavras
                   </p>
                   <button
                     onClick={(e) => {
@@ -381,9 +394,9 @@ export default function UploadPage() {
                       marginTop: 16,
                       padding: '8px 16px',
                       background: 'transparent',
-                      border: '1px solid var(--border)',
+                      border: '1px solid rgba(255,255,255,0.1)',
                       borderRadius: 8,
-                      color: 'var(--text-muted)',
+                      color: '#71717a',
                       fontSize: 13,
                       cursor: 'pointer',
                     }}
@@ -397,81 +410,67 @@ export default function UploadPage() {
                     width: 80,
                     height: 80,
                     borderRadius: 20,
-                    background: 'var(--bg-muted)',
+                    background: 'rgba(255,255,255,0.03)',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
                     margin: '0 auto 20px',
-                    color: 'var(--text-muted)',
+                    color: '#52525b',
                   }}>
                     <Icons.Upload />
                   </div>
                   <p style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>
-                    Arraste um PDF aqui
+                    Arraste um documento aqui
                   </p>
-                  <p style={{ fontSize: 14, color: 'var(--text-muted)', marginBottom: 16 }}>
+                  <p style={{ fontSize: 14, color: '#71717a', marginBottom: 16 }}>
                     ou clique para selecionar
                   </p>
-                  <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>
-                    Máximo 50MB • Apenas PDF
+                  <p style={{ fontSize: 13, color: '#52525b' }}>
+                    Máximo 50MB • PDF, DOCX ou PPTX
                   </p>
                 </>
               )}
             </div>
 
-            {/* Deck Title Input */}
+            {/* Process Button */}
             {file && pdfText && (
-              <div style={{ marginTop: 24 }}>
-                <label style={{ display: 'block', fontSize: 14, fontWeight: 500, marginBottom: 8 }}>
-                  Nome do Deck
-                </label>
-                <input
-                  type="text"
-                  value={deckTitle}
-                  onChange={(e) => setDeckTitle(e.target.value)}
-                  placeholder="Ex: Direito Civil - Contratos"
-                  style={{
-                    width: '100%',
-                    height: 48,
-                    padding: '0 16px',
-                    fontSize: 15,
-                    background: 'var(--bg-muted)',
-                    border: '1px solid var(--border)',
-                    borderRadius: 10,
-                    color: 'var(--text-primary)',
-                    outline: 'none',
-                  }}
-                />
-              </div>
+              <button
+                onClick={handleUploadAndProcess}
+                style={{
+                  width: '100%',
+                  marginTop: 24,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 10,
+                  padding: '18px 32px',
+                  background: 'linear-gradient(135deg, #22C55E 0%, #16A34A 100%)',
+                  border: 'none',
+                  borderRadius: 14,
+                  color: 'white',
+                  fontSize: 17,
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  boxShadow: '0 4px 20px rgba(34, 197, 94, 0.3)',
+                }}
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                  <polyline points="17 8 12 3 7 8"/>
+                  <line x1="12" y1="3" x2="12" y2="15"/>
+                </svg>
+                Processar Documento
+              </button>
             )}
 
-            {/* Generate Button */}
-            <button
-              onClick={handleGenerate}
-              disabled={!file || !pdfText || !deckTitle.trim()}
-              style={{
-                width: '100%',
-                marginTop: 24,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: 10,
-                padding: '18px 32px',
-                background: file && pdfText && deckTitle.trim()
-                  ? 'linear-gradient(135deg, #6366F1 0%, #7C3AED 100%)'
-                  : 'var(--bg-muted)',
-                border: 'none',
-                borderRadius: 14,
-                color: file && pdfText && deckTitle.trim() ? 'white' : 'var(--text-muted)',
-                fontSize: 17,
-                fontWeight: 600,
-                cursor: file && pdfText && deckTitle.trim() ? 'pointer' : 'not-allowed',
-                boxShadow: file && pdfText && deckTitle.trim() ? '0 4px 20px rgba(99, 102, 241, 0.3)' : 'none',
-              }}
-            >
-              <Icons.Sparkles />
-              Gerar Deck com IA
-            </button>
+            <p style={{ 
+              textAlign: 'center', 
+              marginTop: 16, 
+              fontSize: 13, 
+              color: '#52525b' 
+            }}>
+              O documento será processado e ficará disponível para gerar flashcards ou simulados
+            </p>
           </>
         )}
 
@@ -482,161 +481,40 @@ export default function UploadPage() {
               width: 100,
               height: 100,
               borderRadius: '50%',
-              background: 'rgba(99, 102, 241, 0.1)',
+              background: 'rgba(34, 197, 94, 0.1)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
               margin: '0 auto 32px',
-              color: 'var(--accent)',
+              color: '#22c55e',
             }}>
-              <Icons.Sparkles />
+              <Icons.Loader />
             </div>
             
-            <h2 style={{ fontSize: 24, fontWeight: 700, marginBottom: 8 }}>
-              Gerando flashcards...
+            <h2 style={{ fontSize: 24, fontWeight: 700, marginBottom: 8, letterSpacing: '-0.02em' }}>
+              Processando documento...
             </h2>
-            <p style={{ color: 'var(--text-secondary)', marginBottom: 32 }}>
+            <p style={{ color: '#71717a', marginBottom: 32 }}>
               {statusMessage}
             </p>
             
             {/* Progress Bar */}
             <div style={{
               width: '100%',
-              maxWidth: 320,
               height: 8,
-              background: 'var(--bg-muted)',
+              background: 'rgba(255,255,255,0.05)',
               borderRadius: 4,
-              margin: '0 auto',
               overflow: 'hidden',
             }}>
               <div style={{
-                height: '100%',
                 width: `${progress}%`,
-                background: 'linear-gradient(90deg, #6366F1, #7C3AED)',
-                transition: 'width 0.3s ease',
+                height: '100%',
+                background: 'linear-gradient(90deg, #22c55e, #16a34a)',
+                borderRadius: 4,
+                transition: 'width 0.5s ease',
               }} />
             </div>
-            
-            <p style={{ fontSize: 14, color: 'var(--text-muted)', marginTop: 16 }}>
-              Isso pode levar até 1 minuto
-            </p>
           </div>
-        )}
-
-        {/* Step: Naming / Preview */}
-        {step === 'naming' && (
-          <>
-            <div style={{
-              background: 'rgba(34, 197, 94, 0.1)',
-              border: '1px solid rgba(34, 197, 94, 0.3)',
-              borderRadius: 16,
-              padding: 20,
-              display: 'flex',
-              alignItems: 'center',
-              gap: 16,
-              marginBottom: 24,
-            }}>
-              <div style={{
-                width: 48,
-                height: 48,
-                borderRadius: 12,
-                background: 'rgba(34, 197, 94, 0.15)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                color: 'var(--success)',
-              }}>
-                <Icons.Sparkles />
-              </div>
-              <div>
-                <p style={{ fontWeight: 600, marginBottom: 4 }}>
-                  {generatedCards.length} flashcards gerados!
-                </p>
-                <p style={{ fontSize: 14, color: 'var(--text-secondary)' }}>
-                  Revise o nome do deck e salve
-                </p>
-              </div>
-            </div>
-            
-            <div style={{ marginBottom: 24 }}>
-              <label style={{ display: 'block', fontSize: 14, fontWeight: 500, marginBottom: 8 }}>
-                Nome do Deck
-              </label>
-              <input
-                type="text"
-                value={deckTitle}
-                onChange={(e) => setDeckTitle(e.target.value)}
-                style={{
-                  width: '100%',
-                  height: 48,
-                  padding: '0 16px',
-                  fontSize: 15,
-                  background: 'var(--bg-muted)',
-                  border: '1px solid var(--border)',
-                  borderRadius: 10,
-                  color: 'var(--text-primary)',
-                  outline: 'none',
-                }}
-              />
-            </div>
-            
-            {/* Preview Cards */}
-            <div style={{ marginBottom: 24 }}>
-              <label style={{ display: 'block', fontSize: 14, fontWeight: 500, marginBottom: 12 }}>
-                Preview dos Cards ({generatedCards.length})
-              </label>
-              <div style={{
-                maxHeight: 300,
-                overflow: 'auto',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 8,
-              }}>
-                {generatedCards.slice(0, 5).map((card, index) => (
-                  <div key={index} style={{
-                    background: 'var(--bg-muted)',
-                    borderRadius: 12,
-                    padding: 16,
-                  }}>
-                    <p style={{ fontSize: 13, color: 'var(--accent)', marginBottom: 8, fontWeight: 500 }}>
-                      Pergunta {index + 1}
-                    </p>
-                    <p style={{ fontSize: 14, marginBottom: 8 }}>{card.front}</p>
-                    <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>{card.back}</p>
-                  </div>
-                ))}
-                {generatedCards.length > 5 && (
-                  <p style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: 13, padding: 12 }}>
-                    +{generatedCards.length - 5} cards...
-                  </p>
-                )}
-              </div>
-            </div>
-            
-            <button
-              onClick={handleSaveDeck}
-              disabled={generating || !deckTitle.trim()}
-              style={{
-                width: '100%',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: 10,
-                padding: '18px 32px',
-                background: 'linear-gradient(135deg, #6366F1 0%, #7C3AED 100%)',
-                border: 'none',
-                borderRadius: 14,
-                color: 'white',
-                fontSize: 17,
-                fontWeight: 600,
-                cursor: generating ? 'not-allowed' : 'pointer',
-                boxShadow: '0 4px 20px rgba(99, 102, 241, 0.3)',
-                opacity: generating ? 0.7 : 1,
-              }}
-            >
-              {generating ? <Icons.Loader /> : 'Salvar Deck'}
-            </button>
-          </>
         )}
 
         {/* Step: Complete */}
@@ -646,57 +524,25 @@ export default function UploadPage() {
               width: 100,
               height: 100,
               borderRadius: '50%',
-              background: 'rgba(34, 197, 94, 0.15)',
+              background: 'rgba(34, 197, 94, 0.1)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
               margin: '0 auto 32px',
-              color: 'var(--success)',
+              color: '#22c55e',
             }}>
               <Icons.Check />
             </div>
             
-            <h2 style={{ fontSize: 24, fontWeight: 700, marginBottom: 8 }}>
-              Deck criado com sucesso! 🎉
+            <h2 style={{ fontSize: 24, fontWeight: 700, marginBottom: 8, letterSpacing: '-0.02em' }}>
+              Documento Processado! ✅
             </h2>
-            <p style={{ color: 'var(--text-secondary)', marginBottom: 32 }}>
-              {generatedCards.length} flashcards prontos para estudar
+            <p style={{ color: '#71717a', marginBottom: 16 }}>
+              Redirecionando para geração de conteúdo...
             </p>
-            
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxWidth: 320, margin: '0 auto' }}>
-              <Link href={`/estudar/${createdDeckId}`} style={{ textDecoration: 'none' }}>
-                <button style={{
-                  width: '100%',
-                  padding: '18px 32px',
-                  background: 'linear-gradient(135deg, #6366F1 0%, #7C3AED 100%)',
-                  border: 'none',
-                  borderRadius: 14,
-                  color: 'white',
-                  fontSize: 17,
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                  boxShadow: '0 4px 20px rgba(99, 102, 241, 0.3)',
-                }}>
-                  Começar a Estudar
-                </button>
-              </Link>
-              
-              <Link href="/dashboard" style={{ textDecoration: 'none' }}>
-                <button style={{
-                  width: '100%',
-                  padding: '18px 32px',
-                  background: 'var(--bg-muted)',
-                  border: '1px solid var(--border)',
-                  borderRadius: 14,
-                  color: 'var(--text-secondary)',
-                  fontSize: 17,
-                  fontWeight: 500,
-                  cursor: 'pointer',
-                }}>
-                  Voltar ao Dashboard
-                </button>
-              </Link>
-            </div>
+            <p style={{ fontSize: 14, color: '#52525b' }}>
+              {file?.name}
+            </p>
           </div>
         )}
       </main>

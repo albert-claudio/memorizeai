@@ -68,20 +68,15 @@ export default function AuthLayout({
         
         {/* Logo */}
         <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: 12, textDecoration: 'none', color: 'inherit', position: 'relative', zIndex: 1 }}>
-          <div style={{
-            width: 44,
-            height: 44,
-            borderRadius: 12,
-            background: 'linear-gradient(135deg, #6366F1 0%, #7C3AED 100%)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}>
-            <Icons.Brain />
-          </div>
-          <span style={{ fontSize: 24, fontWeight: 700 }}>
-            Memorize<span className="text-gradient">AI</span>
-          </span>
+          <span style={{ 
+            fontSize: 28, 
+            fontWeight: 800, 
+            letterSpacing: '-0.02em',
+            background: 'linear-gradient(135deg, #6366F1 0%, #A855F7 50%, #EC4899 100%)',
+            WebkitBackgroundClip: 'text',
+            WebkitTextFillColor: 'transparent',
+            backgroundClip: 'text',
+          }}>Vimens</span>
         </Link>
         
         {/* Center Content */}
@@ -143,7 +138,7 @@ export default function AuthLayout({
         
         {/* Footer */}
         <p style={{ fontSize: 14, color: 'var(--text-muted)', position: 'relative', zIndex: 1 }}>
-          © 2024 MemorizeAI. Todos os direitos reservados.
+          © 2025 Vimens. Todos os direitos reservados.
         </p>
       </div>
       
@@ -157,23 +152,17 @@ export default function AuthLayout({
         padding: 24,
         minHeight: '100vh',
       }}>
-        {/* Mobile Logo */}
         <div className="auth-mobile-logo" style={{ display: 'none', marginBottom: 32 }}>
           <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: 10, textDecoration: 'none', color: 'inherit' }}>
-            <div style={{
-              width: 40,
-              height: 40,
-              borderRadius: 10,
-              background: 'linear-gradient(135deg, #6366F1 0%, #7C3AED 100%)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}>
-              <Icons.Brain />
-            </div>
-            <span style={{ fontSize: 20, fontWeight: 700 }}>
-              Memorize<span className="text-gradient">AI</span>
-            </span>
+            <span style={{ 
+              fontSize: 24, 
+              fontWeight: 800, 
+              letterSpacing: '-0.02em',
+              background: 'linear-gradient(135deg, #6366F1 0%, #A855F7 50%, #EC4899 100%)',
+              WebkitBackgroundClip: 'text',
+              WebkitTextFillColor: 'transparent',
+              backgroundClip: 'text',
+            }}>Vimens</span>
           </Link>
         </div>
         
