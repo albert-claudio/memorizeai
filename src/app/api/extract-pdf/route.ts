@@ -1,10 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { hasProAccess } from '@/lib/billing/pro-access';
 
 // Route Segment Config (App Router format)
 export const maxDuration = 120; // 120 segundos de timeout
 export const dynamic = 'force-dynamic';
 
 // pdf2json funciona nativamente no Node.js sem problemas de canvas/DOM
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const PDFParser = require('pdf2json');
 
 /**
@@ -100,11 +103,11 @@ async function extractTextFromPDF(buffer: Buffer): Promise<{ text: string; numpa
   return new Promise((resolve, reject) => {
     const pdfParser = new PDFParser(null, 1);
     
-    pdfParser.on('pdfParser_dataError', (errData: any) => {
+    pdfParser.on('pdfParser_dataError', (errData: { parserError: string }) => {
       reject(new Error(errData.parserError));
     });
     
-    pdfParser.on('pdfParser_dataReady', (pdfData: any) => {
+    pdfParser.on('pdfParser_dataReady', (pdfData: { Pages?: Array<{ Texts?: Array<{ R?: Array<{ T?: string }> }> }> }) => {
       try {
         let text = '';
         let pageCount = 0;
@@ -147,6 +150,37 @@ async function extractTextFromPDF(buffer: Buffer): Promise<{ text: string; numpa
 
 export async function POST(request: NextRequest) {
   try {
+    // ================================================================
+    // AUTHENTICATION CHECK - Prevent anonymous abuse
+    // ================================================================
+    const supabase = await createClient();
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    
+    if (authError || !user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
+    // ================================================================
+    // PRO TIER VALIDATION - PDF extraction requires Pro subscription
+    // ================================================================
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('is_pro, subscription_status, subscription_period_end')
+      .eq('id', user.id)
+      .single();
+
+    const isPro = hasProAccess(profile);
+
+    if (!isPro) {
+      return NextResponse.json(
+        { error: 'PDF extraction requires Pro subscription' },
+        { status: 403 }
+      );
+    }
+
     const formData = await request.formData();
     const file = formData.get('file') as File;
     

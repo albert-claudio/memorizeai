@@ -10,9 +10,9 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-// Generate unique ID
+// Generate cryptographically secure random ID (Deno compatible)
 function generateId(): string {
-  return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  return crypto.randomUUID();
 }
 
 // Types
@@ -272,6 +272,24 @@ function getFallbackModel(current: ModelType): ModelType {
   return current === 'groq' ? 'gemini' : 'groq';
 }
 
+function hasProAccess(profile: {
+  is_pro?: boolean | null;
+  subscription_status?: string | null;
+  subscription_period_end?: number | null;
+} | null | undefined): boolean {
+  if (!profile?.is_pro) return false;
+
+  const status = profile.subscription_status ?? 'free';
+  if (status !== 'active' && status !== 'past_due') return false;
+
+  const periodEnd = profile.subscription_period_end;
+  if (typeof periodEnd === 'number') {
+    return periodEnd > Date.now();
+  }
+
+  return status === 'active';
+}
+
 // ============================================================================
 // CONTENT PROCESSING
 // ============================================================================
@@ -330,10 +348,26 @@ serve(async (req: Request) => {
       );
     }
 
-    // Create Supabase client with service role
+    // ================================================================
+    // SECURITY: Validate caller authorization
+    // ================================================================
+    const authHeader = req.headers.get("Authorization");
+    if (!authHeader) {
+      return new Response(
+        JSON.stringify({ error: "Authorization required" }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-    const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-    const supabase = createClient(supabaseUrl, supabaseKey);
+    const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
+    const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+
+    // Check if caller is using service role (internal call from /api/runs)
+    const isServiceRole = authHeader === `Bearer ${supabaseServiceKey}`;
+    
+    // Create service role client for processing
+    const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
     // ========================================================================
     // 1. GET RUN AND VALIDATE
@@ -350,6 +384,66 @@ serve(async (req: Request) => {
         JSON.stringify({ error: "Run not found" }),
         { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
+    }
+
+    // If NOT service role, validate user owns this run
+    if (!isServiceRole) {
+      const userClient = createClient(supabaseUrl, supabaseAnonKey, {
+        global: { headers: { Authorization: authHeader } }
+      });
+      
+      const { data: { user }, error: authError } = await userClient.auth.getUser();
+      if (authError || !user) {
+        return new Response(
+          JSON.stringify({ error: "Invalid token" }),
+          { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      // Verify user owns this run
+      if (run.user_id !== user.id) {
+        return new Response(
+          JSON.stringify({ error: "Forbidden - you do not own this run" }),
+          { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+    }
+
+    // ================================================================
+    // PRO TIER VALIDATION - AI generation requires Pro subscription
+    // ================================================================
+    const { data: profile } = await supabase
+      .from("profiles")
+      .select("is_pro, subscription_status, subscription_period_end")
+      .eq("id", run.user_id)
+      .single();
+
+    const isPro = hasProAccess(profile);
+
+    if (!isPro) {
+      return new Response(
+        JSON.stringify({ error: "AI generation requires Pro subscription" }),
+        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // ================================================================
+    // DECK OWNERSHIP VALIDATION (if deck_id is provided)
+    // Prevents cross-tenant writes via foreign deck_id
+    // ================================================================
+    if (run.deck_id) {
+      const { data: deck, error: deckError } = await supabase
+        .from("decks")
+        .select("id, user_id")
+        .eq("id", run.deck_id)
+        .single();
+
+      if (deckError || !deck || deck.user_id !== run.user_id) {
+        return new Response(
+          JSON.stringify({ error: "Invalid deck - access denied" }),
+          { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
     }
 
     // Check if already processing or completed
@@ -377,17 +471,22 @@ serve(async (req: Request) => {
 
     try {
       // ======================================================================
-      // 3. FETCH CHUNKS FOR SOURCE
+      // 3. FETCH AND VALIDATE SOURCE OWNERSHIP
       // ======================================================================
       
       const { data: source } = await supabase
         .from("sources")
-        .select("id, filename")
+        .select("id, filename, user_id")
         .eq("id", run.source_id)
         .single();
 
       if (!source) {
         throw new Error("Source not found");
+      }
+
+      // SECURITY: Verify source belongs to the user who owns the run
+      if (source.user_id !== run.user_id) {
+        throw new Error("Source ownership mismatch - access denied");
       }
 
       const { data: sourceChunks } = await supabase

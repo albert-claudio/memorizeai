@@ -1,0 +1,136 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  secret-scan:
+    name: Secret and Policy Checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Block tracked dotenv files
+        shell: bash
+        run: |
+          tracked_env_files="$(git ls-files | grep -E '(^|/)\.env($|\.)' | grep -Ev '\.env\.example$' || true)"
+          if [ -n "$tracked_env_files" ]; then
+            echo "Tracked dotenv files are not allowed:"
+            echo "$tracked_env_files"
+            exit 1
+          fi
+
+      - name: Run gitleaks secret scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  lint-test-build:
+    name: Lint, Test and Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: secret-scan
+    env:
+      NEXT_PUBLIC_SUPABASE_URL: https://example.supabase.co
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: test_anon_key
+      SUPABASE_SERVICE_ROLE_KEY: test_service_role_key
+      NEXT_PUBLIC_APP_URL: https://example.com
+      STRIPE_SECRET_KEY: sk_test_dummy
+      STRIPE_WEBHOOK_SECRET: whsec_dummy
+      STRIPE_PRO_PRICE_ID: price_dummy_pro
+      STRIPE_ENTERPRISE_PRICE_ID: price_dummy_enterprise
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint:ci
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+  dependency-audit:
+    name: Dependency Audit (prod)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: secret-scan
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+
+  live-integration-smoke:
+    name: Live Integration Smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs:
+      - lint-test-build
+      - dependency-audit
+    if: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL != '' && secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY != '' && secrets.SUPABASE_SERVICE_ROLE_KEY != '' && secrets.STRIPE_SECRET_KEY != '' && secrets.STRIPE_PRO_PRICE_ID != '' && secrets.STRIPE_WEBHOOK_SECRET != '' && secrets.BILLING_E2E_APP_URL != '' && secrets.BILLING_E2E_SECRET != '' }}
+    env:
+      NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+      STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+      STRIPE_PRO_PRICE_ID: ${{ secrets.STRIPE_PRO_PRICE_ID }}
+      STRIPE_ENTERPRISE_PRICE_ID: ${{ secrets.STRIPE_ENTERPRISE_PRICE_ID }}
+      BILLING_E2E_ENABLED: true
+      BILLING_CHECKOUT_E2E_ENABLED: true
+      BILLING_E2E_APP_URL: ${{ secrets.BILLING_E2E_APP_URL }}
+      BILLING_E2E_SECRET: ${{ secrets.BILLING_E2E_SECRET }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        if: ${{ env.BILLING_CHECKOUT_E2E_ENABLED == 'true' }}
+        run: npx playwright install --with-deps chromium
+
+      - name: Run live integration smoke checks
+        run: npm run test:live-integration

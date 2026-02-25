@@ -1,3 +1,4 @@
+
 'use client';
 
 import { useEffect, useState } from 'react';
@@ -5,6 +6,9 @@ import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import type { User } from '@supabase/supabase-js';
 import type { Deck } from '@/lib/types';
+import { useDecks } from '@/features/dashboard/hooks/useDecks';
+import { useSimulados } from '@/features/dashboard/hooks/useSimulados';
+import { useTierLimits } from '@/features/dashboard/hooks/useTierLimits';
 import {
   Icons,
   Modal,
@@ -16,25 +20,32 @@ import {
   primaryButtonStyle,
   secondaryButtonStyle,
   globalStyles,
-  type Simulado,
-} from './_components';
-
-// Generate unique ID
-function generateId() {
-  return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-}
+} from './components';
 
 export default function DashboardPage() {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [decks, setDecks] = useState<Deck[]>([]);
-  const [loadingDecks, setLoadingDecks] = useState(true);
-  const [cardCounts, setCardCounts] = useState<Record<string, number>>({});
+  const [loadingUser, setLoadingUser] = useState(true);
+
+  // Custom Hooks
+  const { 
+    decks, 
+    cardCounts, 
+    loading: loadingDecks, 
+    addDeck, 
+    updateDeck, 
+    removeDeck 
+  } = useDecks(user?.id);
   
-  // Simulados state
-  const [simulados, setSimulados] = useState<Simulado[]>([]);
-  const [loadingSimulados, setLoadingSimulados] = useState(true);
+  const { 
+    simulados, 
+    loading: loadingSimulados 
+  } = useSimulados(user?.id);
+  
+  const { 
+    tierLimits, 
+    incrementDeckCount 
+  } = useTierLimits();
   
   // Modal states
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -54,67 +65,17 @@ export default function DashboardPage() {
       const supabase = createClient();
       const { data: { user } } = await supabase.auth.getUser();
       
-      // Middleware handles redirect, but double-check for safety
       if (!user) {
-        // Middleware should have redirected, but if we got here somehow, redirect
         window.location.href = '/login';
         return;
       }
       
       setUser(user);
-      setLoading(false);
-      fetchDecks(user.id);
-      fetchSimulados(user.id);
+      setLoadingUser(false);
     };
 
     checkUser();
   }, []);
-
-  const fetchDecks = async (userId: string) => {
-    setLoadingDecks(true);
-    const supabase = createClient();
-    
-    const { data, error } = await supabase
-      .from('decks')
-      .select('*')
-      .eq('user_id', userId)
-      .is('deleted_at', null)
-      .order('created_at', { ascending: false });
-    
-    if (!error && data) {
-      setDecks(data);
-      
-      // Fetch card counts for each deck
-      const counts: Record<string, number> = {};
-      for (const deck of data) {
-        const { count } = await supabase
-          .from('cards')
-          .select('*', { count: 'exact', head: true })
-          .eq('deck_id', deck.id)
-          .is('deleted_at', null);
-        counts[deck.id] = count || 0;
-      }
-      setCardCounts(counts);
-    }
-    setLoadingDecks(false);
-  };
-
-  const fetchSimulados = async (userId: string) => {
-    setLoadingSimulados(true);
-    const supabase = createClient();
-    
-    const { data, error } = await supabase
-      .from('simulados')
-      .select('*')
-      .eq('user_id', userId)
-      .is('deleted_at', null)
-      .order('created_at', { ascending: false });
-    
-    if (!error && data) {
-      setSimulados(data);
-    }
-    setLoadingSimulados(false);
-  };
 
   const handleLogout = async () => {
     const supabase = createClient();
@@ -124,34 +85,26 @@ export default function DashboardPage() {
 
   const handleCreateDeck = async () => {
     if (!deckTitle.trim() || !user) return;
+    
+    // Check tier limits for free users
+    if (tierLimits && !tierLimits.isPro && decks.length >= tierLimits.maxDecks) {
+      setError(`Limite de ${tierLimits.maxDecks} decks atingido. Faça upgrade para Pro para decks ilimitados.`);
+      return;
+    }
+    
     setSaving(true);
     setError('');
 
-    const supabase = createClient();
-    const now = Date.now();
-    
-    const { data, error: insertError } = await supabase
-      .from('decks')
-      .insert({
-        id: generateId(),
-        user_id: user.id,
-        title: deckTitle.trim(),
-        description: deckDescription.trim() || null,
-        created_at: now,
-        updated_at: now,
-      })
-      .select()
-      .single();
-
-    if (insertError) {
-      setError(insertError.message);
-    } else if (data) {
-      setDecks([data, ...decks]);
-      setCardCounts({ ...cardCounts, [data.id]: 0 });
+    try {
+      await addDeck(deckTitle, deckDescription);
       setShowCreateModal(false);
       resetForm();
+      incrementDeckCount();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Erro ao criar deck');
+    } finally {
+      setSaving(false);
     }
-    setSaving(false);
   };
 
   const handleEditDeck = async () => {
@@ -159,47 +112,31 @@ export default function DashboardPage() {
     setSaving(true);
     setError('');
 
-    const supabase = createClient();
-    const { data, error: updateError } = await supabase
-      .from('decks')
-      .update({
-        title: deckTitle.trim(),
-        description: deckDescription.trim() || null,
-        updated_at: Date.now(),
-      })
-      .eq('id', selectedDeck.id)
-      .select()
-      .single();
-
-    if (updateError) {
-      setError(updateError.message);
-    } else if (data) {
-      setDecks(decks.map(d => d.id === data.id ? data : d));
+    try {
+      await updateDeck(selectedDeck.id, deckTitle, deckDescription);
       setShowEditModal(false);
       resetForm();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Erro ao atualizar deck');
+    } finally {
+      setSaving(false);
     }
-    setSaving(false);
   };
 
   const handleDeleteDeck = async () => {
-    if (!selectedDeck) return;
+    if (!selectedDeck || !user) return;
     setSaving(true);
 
-    const supabase = createClient();
-    const { error: deleteError } = await supabase
-      .from('decks')
-      .update({
-        deleted_at: Date.now(),
-        updated_at: Date.now(),
-      })
-      .eq('id', selectedDeck.id);
-
-    if (!deleteError) {
-      setDecks(decks.filter(d => d.id !== selectedDeck.id));
+    try {
+      await removeDeck(selectedDeck.id);
       setShowDeleteModal(false);
       setSelectedDeck(null);
+    } catch (err: unknown) {
+      console.error(err);
+      // Optional: set error state if needed
+    } finally {
+      setSaving(false);
     }
-    setSaving(false);
   };
 
   const openEditModal = (deck: Deck) => {
@@ -224,7 +161,7 @@ export default function DashboardPage() {
   };
 
   // Loading state
-  if (loading) {
+  if (loadingUser) {
     return (
       <div style={{
         minHeight: '100vh',
@@ -320,44 +257,72 @@ export default function DashboardPage() {
         {/* Page Header */}
         <div className="dashboard-page-header">
           <div>
-            <h1 className="dashboard-page-title" style={{ 
-              fontWeight: 700, 
-              marginBottom: 8,
-              letterSpacing: '-0.03em',
-              color: '#f4f4f5',
-            }}>
-              Seus Decks
-            </h1>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+              <h1 className="dashboard-page-title" style={{ 
+                fontWeight: 700, 
+                letterSpacing: '-0.03em',
+                color: '#f4f4f5',
+              }}>
+                Seus Decks
+              </h1>
+              {tierLimits && (
+                <span style={{
+                  padding: '4px 10px',
+                  borderRadius: 20,
+                  fontSize: 11,
+                  fontWeight: 600,
+                  background: tierLimits.isPro 
+                    ? 'linear-gradient(135deg, #FFD700 0%, #FFA500 100%)' 
+                    : 'rgba(255,255,255,0.08)',
+                  color: tierLimits.isPro ? '#000' : '#a1a1aa',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.05em',
+                }}>
+                  {tierLimits.isPro ? '👑 Pro' : 'Free'}
+                </span>
+              )}
+            </div>
             <p className="dashboard-page-subtitle" style={{ 
               color: '#71717a',
               fontWeight: 500, 
             }}>
-              {decks.length === 0 ? 'Crie seu primeiro deck para começar' : `${decks.length} deck${decks.length !== 1 ? 's' : ''} de flashcards`}
+              {decks.length === 0 
+                ? 'Crie seu primeiro deck para começar' 
+                : tierLimits && !tierLimits.isPro 
+                  ? `${decks.length}/${tierLimits.maxDecks} decks de flashcards`
+                  : `${decks.length} deck${decks.length !== 1 ? 's' : ''} de flashcards`}
             </p>
           </div>
           <div className="dashboard-actions">
+              <button
+                onClick={() => router.push('/dashboard/runs')}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  padding: '14px 22px',
+                  background: 'rgba(255,255,255,0.03)',
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  borderRadius: 12,
+                  color: '#e4e4e7',
+                  fontSize: 15,
+                  fontWeight: 500,
+                  cursor: 'pointer',
+                  transition: 'all 0.2s ease',
+                }}
+              >
+                <Icons.Sparkles />
+                Gerar com IA
+              </button>
             <button
-              onClick={() => router.push('/dashboard/runs')}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                padding: '14px 22px',
-                background: 'rgba(255,255,255,0.03)',
-                border: '1px solid rgba(255,255,255,0.08)',
-                borderRadius: 12,
-                color: '#e4e4e7',
-                fontSize: 15,
-                fontWeight: 500,
-                cursor: 'pointer',
-                transition: 'all 0.2s ease',
+              onClick={() => {
+                if (tierLimits && !tierLimits.isPro && decks.length >= tierLimits.maxDecks) {
+                  alert(`Limite de ${tierLimits.maxDecks} decks atingido. Faça upgrade para Pro.`);
+                  router.push('/upgrade');
+                } else {
+                  setShowCreateModal(true);
+                }
               }}
-            >
-              <Icons.Sparkles />
-              Gerar com IA
-            </button>
-            <button
-              onClick={() => setShowCreateModal(true)}
               style={{
                 display: 'flex',
                 alignItems: 'center',

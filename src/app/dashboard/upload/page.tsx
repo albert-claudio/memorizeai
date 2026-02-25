@@ -66,6 +66,25 @@ export default function UploadPage() {
   const [statusMessage, setStatusMessage] = useState('');
   const [progress, setProgress] = useState(0);
 
+  // Tier check state
+  const [isPro, setIsPro] = useState<boolean | null>(null);
+  const [weeklyUploadsUsed, setWeeklyUploadsUsed] = useState(0);
+  const [weeklyUploadsMax, setWeeklyUploadsMax] = useState(3);
+
+  const fetchTierStatus = async () => {
+    try {
+      const response = await fetch('/api/user/tier-limits');
+      if (response.ok) {
+        const data = await response.json();
+        setIsPro(data.isPro);
+        setWeeklyUploadsUsed(data.weeklyUploadsUsed ?? 0);
+        setWeeklyUploadsMax(data.weeklyUploadsMax ?? 3);
+      }
+    } catch (err) {
+      console.error('Failed to fetch tier status:', err);
+    }
+  };
+
   useEffect(() => {
     const checkUser = async () => {
       const supabase = createClient();
@@ -78,10 +97,16 @@ export default function UploadPage() {
       
       setUser(user);
       setLoading(false);
+      
+      // Check tier & quota
+      fetchTierStatus();
     };
 
     checkUser();
   }, [router]);
+
+  const isQuotaExhausted = !isPro && weeklyUploadsUsed >= weeklyUploadsMax;
+  const canUpload = isPro || !isQuotaExhausted;
 
   // Get file extension
   const getFileExtension = (filename: string): string => {
@@ -333,8 +358,107 @@ export default function UploadPage() {
       {/* Main Content */}
       <main style={{ padding: 24, maxWidth: 600, margin: '0 auto' }}>
         
-        {/* Step: Upload */}
-        {step === 'upload' && (
+        {/* Weekly quota indicator (free users only) */}
+        {isPro === false && (
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '14px 20px',
+            background: isQuotaExhausted
+              ? 'rgba(239, 68, 68, 0.08)'
+              : 'rgba(34, 197, 94, 0.08)',
+            borderRadius: 14,
+            border: `1px solid ${isQuotaExhausted ? 'rgba(239, 68, 68, 0.2)' : 'rgba(34, 197, 94, 0.2)'}`,
+            marginBottom: 20,
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span style={{ fontSize: 18 }}>📂</span>
+              <div>
+                <p style={{ fontSize: 14, fontWeight: 600, color: isQuotaExhausted ? '#ef4444' : '#22c55e' }}>
+                  {weeklyUploadsUsed}/{weeklyUploadsMax} uploads esta semana
+                </p>
+                <p style={{ fontSize: 12, color: '#71717a', marginTop: 2 }}>
+                  {isQuotaExhausted
+                    ? 'Limite semanal atingido'
+                    : `${weeklyUploadsMax - weeklyUploadsUsed} upload${weeklyUploadsMax - weeklyUploadsUsed !== 1 ? 's' : ''} restante${weeklyUploadsMax - weeklyUploadsUsed !== 1 ? 's' : ''}`}
+                </p>
+              </div>
+            </div>
+            {isQuotaExhausted && (
+              <button
+                onClick={() => window.location.href = '/upgrade'}
+                style={{
+                  padding: '8px 16px',
+                  background: 'linear-gradient(135deg, #FFD700 0%, #FFA500 100%)',
+                  border: 'none',
+                  borderRadius: 10,
+                  color: '#000',
+                  fontSize: 13,
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                👑 Upgrade Pro
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Quota exhausted block */}
+        {isQuotaExhausted && (
+          <div style={{ 
+            textAlign: 'center', 
+            padding: '64px 32px',
+            background: 'rgba(255,255,255,0.02)',
+            borderRadius: 20,
+            border: '1px solid rgba(255,255,255,0.08)',
+          }}>
+            <div style={{
+              width: 80,
+              height: 80,
+              borderRadius: '50%',
+              background: 'linear-gradient(135deg, rgba(239, 68, 68, 0.1) 0%, rgba(239, 68, 68, 0.05) 100%)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              margin: '0 auto 24px',
+              fontSize: 32,
+            }}>
+              ⏳
+            </div>
+            <h2 style={{ fontSize: 24, fontWeight: 700, marginBottom: 12 }}>
+              Limite semanal atingido
+            </h2>
+            <p style={{ color: '#71717a', marginBottom: 32, lineHeight: 1.6 }}>
+              Você já usou seus {weeklyUploadsMax} uploads gratuitos desta semana. 
+              O limite renova toda segunda-feira, ou faça upgrade para uploads ilimitados.
+            </p>
+            <button
+              onClick={() => window.location.href = '/upgrade'}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 10,
+                padding: '16px 32px',
+                background: 'linear-gradient(135deg, #FFD700 0%, #FFA500 100%)',
+                border: 'none',
+                borderRadius: 12,
+                color: '#000',
+                fontSize: 16,
+                fontWeight: 600,
+                cursor: 'pointer',
+                boxShadow: '0 4px 20px rgba(255, 215, 0, 0.3)',
+              }}
+            >
+              👑 Fazer Upgrade para Pro
+            </button>
+          </div>
+        )}
+
+        {/* Step: Upload (available when user has quota or is Pro) */}
+        {step === 'upload' && canUpload && (
           <>
             {/* Drop Zone */}
             <div

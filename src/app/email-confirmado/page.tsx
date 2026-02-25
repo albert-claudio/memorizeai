@@ -84,7 +84,7 @@ export default function EmailConfirmadoPage() {
           <Icons.Brain />
         </div>
         <span style={{ fontSize: 24, fontWeight: 700 }}>
-          Memorize<span className="text-gradient">AI</span>
+          <span className="text-gradient">Vimens</span>
         </span>
       </Link>
 

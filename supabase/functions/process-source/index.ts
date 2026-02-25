@@ -10,9 +10,9 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-// Generate unique ID
+// Generate cryptographically secure random ID (Deno compatible)
 function generateId(): string {
-  return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  return crypto.randomUUID();
 }
 
 // Generate SHA-256 hash for content
@@ -32,6 +32,24 @@ function normalizeText(text: string): string {
     .replace(/[ \t]{2,}/g, " ")        // Single spaces
     .replace(/(\w)-\s*\n\s*(\w)/g, "$1$2") // Join hyphenated words
     .trim();
+}
+
+function hasProAccess(profile: {
+  is_pro?: boolean | null;
+  subscription_status?: string | null;
+  subscription_period_end?: number | null;
+} | null | undefined): boolean {
+  if (!profile?.is_pro) return false;
+
+  const status = profile.subscription_status ?? 'free';
+  if (status !== 'active' && status !== 'past_due') return false;
+
+  const periodEnd = profile.subscription_period_end;
+  if (typeof periodEnd === 'number') {
+    return periodEnd > Date.now();
+  }
+
+  return status === 'active';
 }
 
 // Split text into chunks with overlap
@@ -139,12 +157,76 @@ serve(async (req: Request) => {
       );
     }
 
-    // Create Supabase client with service role
-    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-    const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-    const supabase = createClient(supabaseUrl, supabaseKey);
+    // ================================================================
+    // SECURITY: Validate caller authorization
+    // ================================================================
+    const authHeader = req.headers.get("Authorization");
+    if (!authHeader) {
+      return new Response(
+        JSON.stringify({ error: "Authorization required" }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
 
-    // Get source record
+    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+    const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
+    const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+
+    // Check if caller is using service role (internal call) or user token
+    const isServiceRole = authHeader === `Bearer ${supabaseServiceKey}`;
+    
+    // Create client - service role for processing, user client for auth check
+    const supabase = createClient(supabaseUrl, supabaseServiceKey);
+
+    // If NOT service role, validate user owns the source
+    if (!isServiceRole) {
+      const userClient = createClient(supabaseUrl, supabaseAnonKey, {
+        global: { headers: { Authorization: authHeader } }
+      });
+      
+      const { data: { user }, error: authError } = await userClient.auth.getUser();
+      if (authError || !user) {
+        return new Response(
+          JSON.stringify({ error: "Invalid token" }),
+          { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      // Verify user owns this source
+      const { data: ownedSource } = await supabase
+        .from("sources")
+        .select("id")
+        .eq("id", sourceId)
+        .eq("user_id", user.id)
+        .single();
+
+      if (!ownedSource) {
+        return new Response(
+          JSON.stringify({ error: "Forbidden - you do not own this source" }),
+          { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      // ================================================================
+      // PRO TIER VALIDATION - Processing requires Pro subscription
+      // ================================================================
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("is_pro, subscription_status, subscription_period_end")
+        .eq("id", user.id)
+        .single();
+
+      const isPro = hasProAccess(profile);
+
+      if (!isPro) {
+        return new Response(
+          JSON.stringify({ error: "Processing requires Pro subscription" }),
+          { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+    }
+
+    // Get source record (with service role client)
     const { data: source, error: sourceError } = await supabase
       .from("sources")
       .select("*")
@@ -161,7 +243,7 @@ serve(async (req: Request) => {
     // Update status to processing
     await supabase
       .from("sources")
-      .update({ status: "processing", updated_at: Date.now() })
+      .update({ status: "processando", updated_at: Date.now() })
       .eq("id", sourceId);
 
     try {
@@ -253,11 +335,11 @@ serve(async (req: Request) => {
           .eq("id", sourceId);
       }
 
-      // Mark as ready
+      // Mark as completed
       await supabase
         .from("sources")
         .update({ 
-          status: "ready", 
+          status: "concluido",
           progress: 100, 
           updated_at: Date.now() 
         })
@@ -281,7 +363,7 @@ serve(async (req: Request) => {
       await supabase
         .from("sources")
         .update({ 
-          status: "failed", 
+          status: "erro",
           error_message: errorMessage,
           updated_at: Date.now() 
         })

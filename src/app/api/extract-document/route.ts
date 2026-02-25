@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import mammoth from 'mammoth';
+import { requireAuth, isAuthSuccess } from '@/lib/auth/auth-guard';
+import { canUploadDocument } from '@/lib/billing/tier-limits';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const officeParser = require('officeparser');
@@ -9,6 +11,7 @@ export const maxDuration = 120; // 120 segundos de timeout
 export const dynamic = 'force-dynamic';
 
 // pdf2json funciona nativamente no Node.js sem problemas de canvas/DOM
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const PDFParser = require('pdf2json');
 
 // Supported MIME types
@@ -52,7 +55,7 @@ function preprocessText(rawText: string): string {
   text = text.replace(/(\w)-\s*\n\s*(\w)/g, '$1$2');
   
   // 4. Remove caracteres especiais desnecessários (mantém pontuação básica e acentos)
-  text = text.replace(/[^\w\s\.\,\;\:\!\?\(\)\[\]\-\"\'\\/\náéíóúàèìòùâêîôûãõçñ]/gi, ' ');
+  text = text.replace(/[^\w\s\.\,\;\:\!\?\(\)\[\]\-\"\'\\/\náéíóúàéìòùâêîôûãõçñ]/gi, ' ');
   
   // 5. Remove números de página isolados
   text = text.replace(/^\s*\d+\s*$/gm, '');
@@ -267,8 +270,40 @@ async function extractTextFromPPTX(buffer: Buffer): Promise<{ text: string; page
   }
 }
 
+/**
+ * POST /api/extract-document
+ * Extrai texto de documentos PDF, DOCX e PPTX
+ * 
+ * SECURITY:
+ * - Requires authenticated user
+ * - Free users: limited to 3 uploads/week
+ * - Pro users: unlimited
+ */
 export async function POST(request: NextRequest) {
   try {
+    // ============================================================
+    // SECURITY: Require authentication
+    // ============================================================
+    const authResult = await requireAuth(request);
+    if (!isAuthSuccess(authResult)) {
+      return authResult; // Returns 401 error response
+    }
+
+    // ============================================================
+    // UPLOAD QUOTA: Free users limited to 3/week
+    // ============================================================
+    const uploadCheck = await canUploadDocument(authResult.user.id);
+    if (!uploadCheck.allowed) {
+      return NextResponse.json(
+        { 
+          error: uploadCheck.reason,
+          code: 'UPLOAD_LIMIT_REACHED',
+          upgradeUrl: '/upgrade'
+        },
+        { status: 403 }
+      );
+    }
+
     const formData = await request.formData();
     const file = formData.get('file') as File;
     

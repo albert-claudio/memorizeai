@@ -193,7 +193,7 @@ function Hero() {
               lineHeight: 1.6,
               animationDelay: '0.2s'
             }}>
-              Envie seu PDF. O Vimens gera flashcards. Você aprova e ajusta antes de estudar. As revisões se adaptam aos seus acertos e erros.
+              Envie seu PDF. Nossa IA lê seu PDF e cria o cronograma perfeito em segundos. Você aprova e ajusta antes de estudar. As revisões se adaptam aos seus acertos e erros.
             </p>
             
             <div className="animate-fade-up" style={{ 
@@ -457,7 +457,7 @@ function Exams() {
             <div key={i} className="card" style={{ padding: 24 }}>
               <h3 style={{ fontSize: 20, fontWeight: 700, marginBottom: 12, color: 'var(--accent)' }}>{t.name}</h3>
               <p style={{ fontSize: 14, color: 'var(--text-secondary)', marginBottom: 16, lineHeight: 1.5 }}>
-                Ex: "{t.example}"
+                Ex: {`"${t.example}"`}
               </p>
               <div style={{ display: 'flex', gap: 16, fontSize: 13, color: 'var(--text-muted)' }}>
                 <span>⏱ {t.routine}</span>
@@ -515,6 +515,61 @@ function Features() {
 // PRICING
 // ============================================================================
 function Pricing() {
+  const [checkoutLoading, setCheckoutLoading] = useState(false);
+  const [proOffer, setProOffer] = useState<{
+    formattedPrice: string;
+    periodLabel: string;
+  } | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+
+    const loadOffer = async () => {
+      try {
+        const response = await fetch('/api/stripe/offer', { cache: 'no-store' });
+        if (!response.ok || !mounted) return;
+        const data = await response.json();
+        setProOffer(data);
+      } catch {
+        // keep fallback values
+      }
+    };
+
+    loadOffer();
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const handlePremiumCheckout = async () => {
+    setCheckoutLoading(true);
+    try {
+      const response = await fetch('/api/stripe/create-checkout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      const data = await response.json();
+
+      if (data.url) {
+        // Redirect to Stripe Checkout
+        window.location.href = data.url;
+      } else if (response.status === 401) {
+        // User not logged in, redirect to signup
+        window.location.href = '/cadastro?plan=premium';
+      } else {
+        console.error('Erro ao criar checkout:', data.error);
+        alert('Erro ao iniciar checkout. Tente novamente.');
+        setCheckoutLoading(false);
+      }
+    } catch (error) {
+      console.error('Erro:', error);
+      alert('Erro ao conectar. Tente novamente.');
+      setCheckoutLoading(false);
+    }
+  };
+
   const plans = [
     {
       name: 'Grátis',
@@ -532,8 +587,8 @@ function Pricing() {
     },
     {
       name: 'Premium',
-      price: 'R$ 29',
-      period: '/mês',
+      price: proOffer?.formattedPrice || 'R$ 29',
+      period: proOffer?.periodLabel || '/mês',
       features: [
         { text: 'Decks ilimitados', ok: true },
         { text: 'Cards ilimitados', ok: true },
@@ -582,10 +637,27 @@ function Pricing() {
                 ))}
               </ul>
               
-              <Link href="/cadastro" className={p.featured ? 'btn-primary' : 'btn-secondary'} style={{ width: '100%', textAlign: 'center' }}>
-                {p.featured ? 'Começar 7 dias grátis' : 'Começar Grátis'}
-                <Icons.ArrowRight />
-              </Link>
+              {p.featured ? (
+                <button 
+                  onClick={handlePremiumCheckout}
+                  disabled={checkoutLoading}
+                  className="btn-primary" 
+                  style={{ 
+                    width: '100%', 
+                    textAlign: 'center',
+                    opacity: checkoutLoading ? 0.7 : 1,
+                    cursor: checkoutLoading ? 'not-allowed' : 'pointer',
+                  }}
+                >
+                  {checkoutLoading ? 'Carregando...' : 'Comece agora!'}
+                  {!checkoutLoading && <Icons.ArrowRight />}
+                </button>
+              ) : (
+                <Link href="/cadastro" className="btn-secondary" style={{ width: '100%', textAlign: 'center' }}>
+                  Começar Grátis
+                  <Icons.ArrowRight />
+                </Link>
+              )}
             </div>
           ))}
         </div>
@@ -594,7 +666,7 @@ function Pricing() {
           <div className="glass" style={{ display: 'inline-flex', alignItems: 'center', gap: 12, padding: '12px 24px', borderRadius: 100 }}>
             <Icons.Shield />
             <span style={{ fontSize: 14, color: 'var(--text-secondary)' }}>
-              7 dias grátis no Premium.
+              Cancele quando quiser.
             </span>
           </div>
         </div>
@@ -636,7 +708,7 @@ function Footer() {
   return (
     <footer className="footer">
       <div className="container footer-inner">
-        <a href="/" className="navbar-logo" style={{ fontSize: 18 }}>
+        <Link href="/" className="navbar-logo" style={{ fontSize: 18 }}>
           <span style={{ 
             fontSize: 22, 
             fontWeight: 800, 
@@ -646,7 +718,7 @@ function Footer() {
             WebkitTextFillColor: 'transparent',
             backgroundClip: 'text',
           }}>Vimens</span>
-        </a>
+        </Link>
         
         <div className="footer-links">
           <Link href="/termos">Termos</Link>

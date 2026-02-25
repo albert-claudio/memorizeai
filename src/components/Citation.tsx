@@ -75,11 +75,10 @@ export function CitationButton({ sourceName, pageNumber, excerpt, onViewPdf }: C
           style={{
             position: 'absolute',
             bottom: '100%',
-            left: '50%',
-            transform: 'translateX(-50%)',
+            right: 0,
             marginBottom: 8,
             width: 300,
-            maxWidth: '90vw',
+            maxWidth: 'calc(100vw - 48px)',
             background: 'var(--bg-overlay)',
             border: '1px solid var(--border)',
             borderRadius: 12,
@@ -141,7 +140,7 @@ export function CitationButton({ sourceName, pageNumber, excerpt, onViewPdf }: C
               marginBottom: 12,
             }}>
               <p style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-                "{excerpt}"
+                {'"'}{excerpt}{'"'}
               </p>
             </div>
             
@@ -316,7 +315,7 @@ export function CitationSheet({
               borderRadius: '0 12px 12px 0',
             }}>
               <p style={{ fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.6, fontStyle: 'italic' }}>
-                "{excerpt}"
+                {'"'}{excerpt}{'"'}
               </p>
             </div>
           </div>

@@ -2,11 +2,36 @@ import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
 
+// ============================================================================
+// SECURITY: Safe redirect validation to prevent open redirect attacks
+// ============================================================================
+const SAFE_REDIRECT_PREFIXES = [
+  '/dashboard',
+  '/estudar',
+  '/decks',
+  '/simulado',
+  '/upgrade',
+  '/email-confirmado',
+  '/settings',
+];
+
+function isSafeRedirect(url: string): boolean {
+  // Must be a relative path starting with /
+  if (!url.startsWith('/')) return false;
+  // Must not be a protocol-relative URL (//evil.com)
+  if (url.startsWith('//')) return false;
+  // Must match one of the allowed prefixes
+  return SAFE_REDIRECT_PREFIXES.some(prefix => url.startsWith(prefix));
+}
+
 export async function GET(request: NextRequest) {
   const requestUrl = new URL(request.url)
   const code = requestUrl.searchParams.get('code')
   const type = requestUrl.searchParams.get('type')
-  const next = requestUrl.searchParams.get('next') ?? '/dashboard'
+  const nextParam = requestUrl.searchParams.get('next') ?? '/dashboard'
+  
+  // SECURITY: Validate redirect to prevent open redirect attacks
+  const next = isSafeRedirect(nextParam) ? nextParam : '/dashboard'
 
   if (code) {
     const supabase = await createClient()

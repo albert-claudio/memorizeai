@@ -129,6 +129,18 @@ JSON:`;
     if (!user) {
       throw new Error('Usuário não autenticado');
     }
+
+    // SECURITY: Validate original deck ownership — prevent IDOR
+    const { data: originalDeck, error: deckError } = await supabase
+      .from('decks')
+      .select('id')
+      .eq('id', originalDeckId)
+      .eq('user_id', user.id)
+      .single();
+
+    if (deckError || !originalDeck) {
+      throw new Error('Deck não encontrado ou acesso negado');
+    }
     
     const now = Date.now();
     
@@ -136,7 +148,7 @@ JSON:`;
     const newDeckTitle = `📚 Revisão: ${originalDeckTitle}`;
     const newDeckId = `${now}-${Math.random().toString(36).substr(2, 9)}`;
     
-    const { error: deckError } = await supabase
+    const { error: insertDeckError } = await supabase
       .from('decks')
       .insert({
         id: newDeckId,
@@ -147,8 +159,8 @@ JSON:`;
         updated_at: now,
       });
     
-    if (deckError) {
-      throw deckError;
+    if (insertDeckError) {
+      throw insertDeckError;
     }
     
     console.log(`[Reforço] Novo deck criado: "${newDeckTitle}" (${newDeckId})`);

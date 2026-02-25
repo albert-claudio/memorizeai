@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import { hasProAccess } from '@/lib/billing/pro-access';
 
-// Generate unique ID
+// Generate cryptographically secure random ID
 function generateId() {
-  return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  return crypto.randomUUID();
 }
 
 /**
@@ -12,27 +13,9 @@ function generateId() {
  */
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
-    const { sourceId, objective, modelPreference = 'auto', targetCount = 10, deckId } = body;
-
-    // Validate required fields
-    if (!sourceId || !objective) {
-      return NextResponse.json(
-        { error: 'sourceId and objective are required' },
-        { status: 400 }
-      );
-    }
-
-    // Validate objective
-    const validObjectives = ['flashcards', 'questoes_banca', 'logica_juridica'];
-    if (!validObjectives.includes(objective)) {
-      return NextResponse.json(
-        { error: 'Invalid objective. Must be: flashcards, questoes_banca, or logica_juridica' },
-        { status: 400 }
-      );
-    }
-
-    // Get user from authorization header
+    // ================================================================
+    // SECURITY: Auth check FIRST — before any body validation
+    // ================================================================
     const authHeader = request.headers.get('authorization');
     if (!authHeader) {
       return NextResponse.json({ error: 'Authorization required' }, { status: 401 });
@@ -54,6 +37,52 @@ export async function POST(request: NextRequest) {
     if (authError || !user) {
       return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
     }
+
+    // Now parse and validate body
+    const body = await request.json();
+    const { sourceId, objective, modelPreference = 'auto', targetCount = 10, deckId } = body;
+
+    // Validate required fields
+    if (!sourceId || !objective) {
+      return NextResponse.json(
+        { error: 'sourceId and objective are required' },
+        { status: 400 }
+      );
+    }
+
+    // Validate objective
+    const validObjectives = ['flashcards', 'questoes_banca', 'logica_juridica'];
+    if (!validObjectives.includes(objective)) {
+      return NextResponse.json(
+        { error: 'Invalid objective. Must be: flashcards, questoes_banca, or logica_juridica' },
+        { status: 400 }
+      );
+    }
+
+    // ================================================================
+    // PRO TIER VALIDATION - Non-flashcard objectives are Pro-only
+    // Free users CAN generate flashcards from uploaded sources
+    // ================================================================
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('is_pro, subscription_status, subscription_period_end')
+      .eq('id', user.id)
+      .single();
+
+    const isPro = hasProAccess(profile);
+
+    if (!isPro && objective !== 'flashcards') {
+      return NextResponse.json(
+        { error: 'Este tipo de geração é exclusivo para usuários Pro.' },
+        { status: 403 }
+      );
+    }
+
+    // ================================================================
+    // SERVER-SIDE targetCount ENFORCEMENT
+    // ================================================================
+    const MAX_TARGET_COUNT = 50;
+    const validatedTargetCount = Math.min(Math.max(1, targetCount), MAX_TARGET_COUNT);
 
     // Check credits
     const { data: credits } = await supabase
@@ -88,11 +117,32 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (source.status !== 'concluido' && source.status !== 'ready') {
+    if (source.status !== 'concluido') {
       return NextResponse.json(
         { error: 'Source is still processing' },
         { status: 400 }
       );
+    }
+
+    // ================================================================
+    // DECK OWNERSHIP VALIDATION (IDOR Prevention)
+    // ================================================================
+    let validatedDeckId = null;
+    if (deckId) {
+      const { data: deck, error: deckError } = await supabase
+        .from('decks')
+        .select('id')
+        .eq('id', deckId)
+        .eq('user_id', user.id)
+        .single();
+
+      if (deckError || !deck) {
+        return NextResponse.json(
+          { error: 'Deck not found or access denied' },
+          { status: 403 }
+        );
+      }
+      validatedDeckId = deck.id;
     }
 
     // Create the run using service role client
@@ -110,10 +160,10 @@ export async function POST(request: NextRequest) {
         id: runId,
         user_id: user.id,
         source_id: sourceId,
-        deck_id: deckId || null,
+        deck_id: validatedDeckId,
         objective,
         model_preference: modelPreference,
-        target_count: targetCount,
+        target_count: validatedTargetCount,
         status: 'pendente',
         attempt_count: 0,
         items_generated: 0,
@@ -187,7 +237,8 @@ export async function GET(request: NextRequest) {
     }
 
     const { searchParams } = new URL(request.url);
-    const limit = parseInt(searchParams.get('limit') || '20');
+    const MAX_LIMIT = 100;
+    const limit = Math.min(Math.max(1, parseInt(searchParams.get('limit') || '20') || 20), MAX_LIMIT);
 
     const { data: runs, error } = await supabase
       .from('runs')

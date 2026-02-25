@@ -1,15 +1,28 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import { createLogger } from '@/lib/logger';
+import { fetchWithTimeout } from '@/lib/ai/timeout';
+import {
+  checkDailyRunQuota,
+  checkCircuitBreaker,
+  recordAISuccess,
+  recordAIFailure,
+} from '@/lib/ai/cost-guard';
+import { hasProAccess } from '@/lib/billing/pro-access';
 
-// Generate unique ID
+// Generate cryptographically secure random ID
 function generateId(): string {
-  return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  return crypto.randomUUID();
 }
 
-// Timestamp helper for logs
+// Legacy shim — callers inside the file still use log(). After each major
+// refactor pass this can be replaced with the typed logger directly.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let _log: (stage: string, message: string, ctx?: Record<string, any>) => void =
+  (stage, message) => console.log(`[${new Date().toISOString()}] [Run:${stage}] ${message}`);
+
 function log(stage: string, message: string) {
-  const timestamp = new Date().toISOString();
-  console.log(`[${timestamp}] [Run:${stage}] ${message}`);
+  _log(stage, message);
 }
 
 // Types
@@ -184,31 +197,29 @@ JSON:`
 // AI CLIENTS
 // ============================================================================
 
+interface AICallResult {
+  text: string;
+  totalTokens: number;
+  durationMs: number;
+}
+
 async function callGemini(
   systemPrompt: string,
   userPrompt: string
-): Promise<string> {
+): Promise<AICallResult> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY not configured");
-  
+
   log('Gemini', 'Calling Gemini 2.5 Flash-lite API...');
   const startTime = Date.now();
-  
-  const response = await fetch(
+
+  const response = await fetchWithTimeout(
     `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${apiKey}`,
     {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        contents: [
-          {
-            parts: [
-              { text: `${systemPrompt}\n\n${userPrompt}` }
-            ]
-          }
-        ],
+        contents: [{ parts: [{ text: `${systemPrompt}\n\n${userPrompt}` }] }],
         generationConfig: {
           temperature: 0.3,
           maxOutputTokens: 16000,
@@ -217,31 +228,32 @@ async function callGemini(
       }),
     }
   );
-  
+
   if (!response.ok) {
     const error = await response.text();
     log('Gemini', `API Error: ${response.status} - ${error}`);
     throw new Error(`Gemini API error: ${response.status} - ${error}`);
   }
-  
+
   const data = await response.json();
-  const elapsed = Date.now() - startTime;
-  log('Gemini', `API responded in ${elapsed}ms`);
-  
-  return data.candidates?.[0]?.content?.parts?.[0]?.text || "[]";
+  const durationMs = Date.now() - startTime;
+  const totalTokens: number = data.usageMetadata?.totalTokenCount ?? 0;
+  log('Gemini', `API responded in ${durationMs}ms, ${totalTokens} tokens`);
+
+  return { text: data.candidates?.[0]?.content?.parts?.[0]?.text || "[]", totalTokens, durationMs };
 }
 
 async function callGroq(
   systemPrompt: string,
   userPrompt: string
-): Promise<string> {
+): Promise<AICallResult> {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) throw new Error("GROQ_API_KEY not configured");
-  
+
   log('Groq', 'Calling Groq Llama 3.3 API...');
   const startTime = Date.now();
-  
-  const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+
+  const response = await fetchWithTimeout("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
     headers: {
       "Authorization": `Bearer ${apiKey}`,
@@ -257,18 +269,19 @@ async function callGroq(
       max_tokens: 8000,
     }),
   });
-  
+
   if (!response.ok) {
     const error = await response.text();
     log('Groq', `API Error: ${response.status} - ${error}`);
     throw new Error(`Groq API error: ${response.status} - ${error}`);
   }
-  
+
   const data = await response.json();
-  const elapsed = Date.now() - startTime;
-  log('Groq', `API responded in ${elapsed}ms`);
-  
-  return data.choices[0]?.message?.content || "[]";
+  const durationMs = Date.now() - startTime;
+  const totalTokens: number = data.usage?.total_tokens ?? 0;
+  log('Groq', `API responded in ${durationMs}ms, ${totalTokens} tokens`);
+
+  return { text: data.choices[0]?.message?.content || "[]", totalTokens, durationMs };
 }
 
 // ============================================================================
@@ -469,15 +482,31 @@ function selectModel(objective: RunObjective, preference: string): 'groq' | 'gem
 
 export async function POST(request: NextRequest) {
   const overallStart = Date.now();
-  
+
   try {
     const { runId } = await request.json();
-    
+
     if (!runId) {
       return NextResponse.json({ error: "runId is required" }, { status: 400 });
     }
 
-    log('Start', `Processing run ${runId}`);
+    // ========================================================================
+    // SECURITY: Internal API secret check
+    // ========================================================================
+    const internalSecret = request.headers.get('x-internal-secret');
+    const expectedSecret = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+    if (!internalSecret || internalSecret !== expectedSecret) {
+      console.warn(JSON.stringify({ level: 'warn', event: 'auth_failed', runId }));
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Set up structured logger — runId is always included in every log line
+    const logger = createLogger({ runId });
+    _log = (stage, message, ctx) =>
+      logger.info(`run_${stage.toLowerCase()}`, { message, ...ctx });
+
+    logger.info('run_start', { message: `Processing run ${runId}` });
 
     // Create Supabase admin client
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
@@ -524,17 +553,22 @@ export async function POST(request: NextRequest) {
 
     try {
       // ======================================================================
-      // 3. FETCH CHUNKS FOR SOURCE
+      // 3. FETCH AND VALIDATE SOURCE OWNERSHIP
       // ======================================================================
       
       const { data: source } = await supabase
         .from("sources")
-        .select("id, filename")
+        .select("id, filename, user_id")
         .eq("id", run.source_id)
         .single();
 
       if (!source) {
         throw new Error("Source not found");
+      }
+
+      // SECURITY: Verify source belongs to the user who owns the run
+      if (source.user_id !== run.user_id) {
+        throw new Error("Source ownership mismatch - access denied");
       }
 
       log('Source', `Found source: ${source.filename}`);
@@ -572,40 +606,83 @@ export async function POST(request: NextRequest) {
       // ======================================================================
       // 4. SELECT MODEL AND EXECUTE
       // ======================================================================
-      
+
       const currentModel = selectModel(run.objective, run.model_preference);
       log('Model', `Selected model: ${currentModel}`);
 
+      // ── Cost guard: daily quota ─────────────────────────────────────────
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('is_pro, subscription_status, subscription_period_end')
+        .eq('id', run.user_id)
+        .single();
+
+      const quotaCheck = await checkDailyRunQuota(
+        run.user_id,
+        hasProAccess(profile)
+      );
+      if (!quotaCheck.allowed) {
+        log('CostGuard', `Daily quota exceeded for user ${run.user_id}`);
+        await supabase
+          .from('runs')
+          .update({ status: 'erro', error_message: quotaCheck.reason, updated_at: Date.now() })
+          .eq('id', runId);
+        return NextResponse.json({ error: quotaCheck.reason }, { status: 429 });
+      }
+
+      // ── Cost guard: circuit breaker ─────────────────────────────────────
+      const circuitCheck = await checkCircuitBreaker(currentModel);
+      if (!circuitCheck.allowed) {
+        log('CostGuard', `Circuit breaker open for ${currentModel}`);
+        await supabase
+          .from('runs')
+          .update({ status: 'erro', error_message: circuitCheck.reason, updated_at: Date.now() })
+          .eq('id', runId);
+        return NextResponse.json({ error: circuitCheck.reason }, { status: 503 });
+      }
+
       await supabase
         .from("runs")
-        .update({ 
-          attempt_count: 1,
-          model_used: currentModel,
-          updated_at: Date.now() 
-        })
+        .update({ attempt_count: 1, model_used: currentModel, updated_at: Date.now() })
         .eq("id", runId);
 
-      // Select chunks that fit within token budget (Groq has 12k limit, Gemini is higher)
-      const maxChars = currentModel === 'groq' ? 32000 : 80000; // ~8k or ~20k tokens
+      // Select chunks that fit within token budget
+      const maxChars = currentModel === 'groq' ? 32000 : 80000;
       const selectedChunks = selectChunksWithinTokenBudget(chunks, maxChars);
-      
+
       const formattedChunks = formatChunksForPrompt(selectedChunks);
       const promptConfig = PROMPTS[run.objective as keyof typeof PROMPTS];
 
       log('AI', `Calling ${currentModel} to generate ${run.target_count} items...`);
+      const aiStart = Date.now();
 
-      const aiCall = currentModel === 'groq' ? callGroq : callGemini;
-      const response = await aiCall(
-        promptConfig.system,
-        promptConfig.user(formattedChunks, run.target_count)
-      );
-      
-      const result = parseAIResponse(response);
-      
+      let aiResult: AICallResult;
+      try {
+        const aiCall = currentModel === 'groq' ? callGroq : callGemini;
+        aiResult = await aiCall(
+          promptConfig.system,
+          promptConfig.user(formattedChunks, run.target_count)
+        );
+        await recordAISuccess(currentModel);
+      } catch (aiErr) {
+        await recordAIFailure(currentModel);
+        throw aiErr;
+      }
+
+      const aiDurationMs = Date.now() - aiStart;
+      log('AI', `AI responded in ${aiDurationMs}ms, tokens: ${aiResult.totalTokens}`);
+
+      await supabase
+        .from('runs')
+        .update({ token_count: aiResult.totalTokens, updated_at: Date.now() })
+        .eq('id', runId);
+
+      const result = parseAIResponse(aiResult.text);
+
       if (!Array.isArray(result) || result.length === 0) {
         throw new Error("Empty or invalid response from AI");
       }
-      
+
       log('AI', `Generated ${result.length} items successfully`);
 
       // ======================================================================
@@ -647,94 +724,98 @@ export async function POST(request: NextRequest) {
         
         log('Simulado', `Created simulado: ${simuladoId}`);
         
-        // Save each question
+        // Accumulate all valid questions and their blank answer records in memory,
+        // then INSERT each table in a single round-trip.
+        const questoesRows: Record<string, unknown>[] = [];
+        const respostasRows: Record<string, unknown>[] = [];
         let questionNumber = 0;
+
         for (const item of result) {
-          try {
-            const question = item as GeneratedQuestion;
-            
-            // Validate chunk
-            if (!question.chunkId || !validChunkIds.has(question.chunkId)) {
-              log('Skip', `Question with invalid chunkId`);
-              continue;
-            }
-            
-            questionNumber++;
-            const questaoId = generateId();
-            
-            // Parse alternativas from new format or legacy
-            let altA = '', altB = '', altC = '', altD = '', altE = '';
-            let enunciado = '';
-            let respostaCorreta = '';
-            let comentario = '';
-            
-            if (question.enunciado && question.alternativas) {
-              // New format
-              enunciado = question.enunciado;
-              altA = question.alternativas[0]?.replace(/^A\)\s*/, '') || '';
-              altB = question.alternativas[1]?.replace(/^B\)\s*/, '') || '';
-              altC = question.alternativas[2]?.replace(/^C\)\s*/, '') || '';
-              altD = question.alternativas[3]?.replace(/^D\)\s*/, '') || '';
-              altE = question.alternativas[4]?.replace(/^E\)\s*/, '') || '';
-              respostaCorreta = question.respostaCorreta || 'A';
-              comentario = question.comentario || '';
-            } else if (question.statement && question.options) {
-              // Legacy format
-              enunciado = question.statement;
-              altA = question.options[0]?.replace(/^A\)\s*/, '') || '';
-              altB = question.options[1]?.replace(/^B\)\s*/, '') || '';
-              altC = question.options[2]?.replace(/^C\)\s*/, '') || '';
-              altD = question.options[3]?.replace(/^D\)\s*/, '') || '';
-              altE = question.options[4]?.replace(/^E\)\s*/, '') || '';
-              respostaCorreta = question.correctAnswer || 'A';
-              comentario = question.explanation || '';
-            } else {
-              log('Skip', `Question ${questionNumber} missing required fields`);
-              continue;
-            }
-            
-            // Insert question
-            const { error: questaoError } = await supabase
-              .from('simulado_questoes')
-              .insert({
-                id: questaoId,
-                simulado_id: simuladoId,
-                numero: questionNumber,
-                enunciado,
-                alternativa_a: altA,
-                alternativa_b: altB,
-                alternativa_c: altC,
-                alternativa_d: altD,
-                alternativa_e: altE,
-                resposta_correta: respostaCorreta,
-                comentario,
-                chunk_id: question.chunkId,
-                citation_excerpt: question.citationExcerpt || '',
-                created_at: now,
-              });
-            
-            if (questaoError) {
-              log('Error', `Failed to insert question ${questionNumber}: ${questaoError.message}`);
-              continue;
-            }
-            
-            // Create empty response record for user to fill
-            await supabase
+          const question = item as GeneratedQuestion;
+
+          if (!question.chunkId || !validChunkIds.has(question.chunkId)) {
+            log('Skip', `Question with invalid chunkId`);
+            continue;
+          }
+
+          questionNumber++;
+          const questaoId = generateId();
+
+          let altA = '', altB = '', altC = '', altD = '', altE = '';
+          let enunciado = '';
+          let respostaCorreta = '';
+          let comentario = '';
+
+          if (question.enunciado && question.alternativas) {
+            enunciado = question.enunciado;
+            altA = question.alternativas[0]?.replace(/^A\)\s*/, '') || '';
+            altB = question.alternativas[1]?.replace(/^B\)\s*/, '') || '';
+            altC = question.alternativas[2]?.replace(/^C\)\s*/, '') || '';
+            altD = question.alternativas[3]?.replace(/^D\)\s*/, '') || '';
+            altE = question.alternativas[4]?.replace(/^E\)\s*/, '') || '';
+            respostaCorreta = question.respostaCorreta || 'A';
+            comentario = question.comentario || '';
+          } else if (question.statement && question.options) {
+            enunciado = question.statement;
+            altA = question.options[0]?.replace(/^A\)\s*/, '') || '';
+            altB = question.options[1]?.replace(/^B\)\s*/, '') || '';
+            altC = question.options[2]?.replace(/^C\)\s*/, '') || '';
+            altD = question.options[3]?.replace(/^D\)\s*/, '') || '';
+            altE = question.options[4]?.replace(/^E\)\s*/, '') || '';
+            respostaCorreta = question.correctAnswer || 'A';
+            comentario = question.explanation || '';
+          } else {
+            log('Skip', `Question ${questionNumber} missing required fields`);
+            questionNumber--;
+            continue;
+          }
+
+          questoesRows.push({
+            id: questaoId,
+            simulado_id: simuladoId,
+            numero: questionNumber,
+            enunciado,
+            alternativa_a: altA,
+            alternativa_b: altB,
+            alternativa_c: altC,
+            alternativa_d: altD,
+            alternativa_e: altE,
+            resposta_correta: respostaCorreta,
+            comentario,
+            chunk_id: question.chunkId,
+            citation_excerpt: question.citationExcerpt || '',
+            created_at: now,
+          });
+
+          respostasRows.push({
+            id: generateId(),
+            simulado_id: simuladoId,
+            questao_id: questaoId,
+            resposta_usuario: null,
+            correta: null,
+            created_at: now,
+          });
+        }
+
+        // Bulk insert — two round-trips regardless of how many questions were generated
+        if (questoesRows.length > 0) {
+          const { error: questoesError } = await supabase
+            .from('simulado_questoes')
+            .insert(questoesRows);
+          if (questoesError) {
+            log('Error', `Bulk insert questoes failed: ${questoesError.message}`);
+          } else {
+            const { error: respostasError } = await supabase
               .from('simulado_respostas')
-              .insert({
-                id: generateId(),
-                simulado_id: simuladoId,
-                questao_id: questaoId,
-                resposta_usuario: null,
-                correta: null,
-                created_at: now,
-              });
-            
-            savedCount++;
-          } catch (itemError) {
-            log('Error', `Error processing question: ${itemError}`);
+              .insert(respostasRows);
+            if (respostasError) {
+              log('Error', `Bulk insert respostas failed: ${respostasError.message}`);
+            } else {
+              savedCount += questoesRows.length;
+            }
           }
         }
+
         
         // Update simulado with actual question count
         await supabase
@@ -762,6 +843,19 @@ export async function POST(request: NextRequest) {
         // ====================================================================
         
         let deckId = run.deck_id;
+        
+        // SECURITY: If deck_id is provided, verify ownership before using
+        if (deckId) {
+          const { data: existingDeck } = await supabase
+            .from('decks')
+            .select('id, user_id')
+            .eq('id', deckId)
+            .single();
+
+          if (!existingDeck || existingDeck.user_id !== run.user_id) {
+            throw new Error("Deck ownership mismatch - access denied");
+          }
+        }
         
         if (!deckId) {
           const now = Date.now();
@@ -800,78 +894,87 @@ export async function POST(request: NextRequest) {
         }
 
         const chunkMetadata = new Map(chunks.map(c => [c.id, { pageNumber: c.pageNumber }]));
-        
+        const batchNow = Date.now();
+
         log('Save', `Saving ${result.length} cards to deck...`);
 
+        // Accumulate all valid cards and their references in memory,
+        // then INSERT each table in a single round-trip.
+        const cardsRows: Record<string, unknown>[] = [];
+        const refsRows: Record<string, unknown>[] = [];
+
         for (const item of result) {
-          try {
-            const typedItem = item as GeneratedFlashcard | GeneratedQuestion;
-            
-            if (!typedItem.chunkId || !validChunkIds.has(typedItem.chunkId)) {
-              log('Skip', `Item with invalid chunkId`);
-              continue;
+          const typedItem = item as GeneratedFlashcard | GeneratedQuestion;
+
+          if (!typedItem.chunkId || !validChunkIds.has(typedItem.chunkId)) {
+            log('Skip', `Item with invalid chunkId`);
+            continue;
+          }
+
+          const cardId = generateId();
+          let front: string;
+          let back: string;
+
+          if (run.objective === 'flashcards') {
+            const flashcard = typedItem as GeneratedFlashcard;
+            front = flashcard.front;
+            back = flashcard.back;
+          } else {
+            // logica_juridica and other formats
+            const question = typedItem as GeneratedQuestion;
+            front = question.statement || '';
+            if (question.options) {
+              front += '\n\n' + question.options.join('\n');
             }
+            back = `Resposta: ${question.correctAnswer || ''}\n\n${question.explanation || ''}`;
+          }
 
-            const now = Date.now();
-            const cardId = generateId();
-            
-            let front: string;
-            let back: string;
-            
-            if (run.objective === 'flashcards') {
-              const flashcard = typedItem as GeneratedFlashcard;
-              front = flashcard.front;
-              back = flashcard.back;
-            } else {
-              // logica_juridica and other formats
-              const question = typedItem as GeneratedQuestion;
-              front = question.statement || '';
-              if (question.options) {
-                front += '\n\n' + question.options.join('\n');
-              }
-              back = `Resposta: ${question.correctAnswer || ''}\n\n${question.explanation || ''}`;
-            }
+          cardsRows.push({
+            id: cardId,
+            deck_id: deckId,
+            front,
+            back,
+            step: 0,
+            source_id: run.source_id,
+            citation_text: typedItem.citationExcerpt,
+            created_at: batchNow,
+            updated_at: batchNow,
+          });
 
-            const { error: cardError } = await supabase
-              .from('cards')
-              .insert({
-                id: cardId,
-                deck_id: deckId,
-                front,
-                back,
-                step: 0,
-                source_id: run.source_id,
-                citation_text: typedItem.citationExcerpt,
-                created_at: now,
-                updated_at: now,
-              });
+          refsRows.push({
+            id: generateId(),
+            card_id: cardId,
+            chunk_id: typedItem.chunkId,
+            source_id: run.source_id,
+            page_number: chunkMetadata.get(typedItem.chunkId)?.pageNumber,
+            excerpt: typedItem.citationExcerpt || '',
+            created_at: batchNow,
+          });
+        }
 
-            if (cardError) {
-              log('Error', `Failed to insert card: ${cardError.message}`);
-              continue;
-            }
+        // Bulk insert — two round-trips regardless of how many cards were generated
+        if (cardsRows.length > 0) {
+          const { error: cardsError } = await supabase
+            .from('cards')
+            .insert(cardsRows);
 
-            const pageNumber = chunkMetadata.get(typedItem.chunkId)?.pageNumber;
-            
-            await supabase
+          if (cardsError) {
+            log('Error', `Bulk insert cards failed: ${cardsError.message}`);
+          } else {
+            const { error: refsError } = await supabase
               .from('card_references')
-              .insert({
-                id: generateId(),
-                card_id: cardId,
-                chunk_id: typedItem.chunkId,
-                source_id: run.source_id,
-                page_number: pageNumber,
-                excerpt: typedItem.citationExcerpt || '',
-                created_at: now,
-              });
+              .insert(refsRows);
 
-            savedCount++;
-          } catch (itemError) {
-            log('Error', `Error processing item: ${itemError}`);
+            if (refsError) {
+              log('Error', `Bulk insert card_references failed: ${refsError.message}`);
+            } else {
+              savedCount += cardsRows.length;
+            }
           }
         }
 
         log('Save', `Saved ${savedCount}/${result.length} cards successfully`);
+
       }
 
       log('Total', `Saved ${savedCount} items`);

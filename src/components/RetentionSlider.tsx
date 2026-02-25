@@ -7,7 +7,7 @@ import {
   MAX_RETENTION,
   getRetentionDescription,
   estimateReviewImpact,
-} from '@/lib/fsrs-weights';
+} from '@/lib/fsrs/weights';
 
 // ============================================================================
 // TYPES

@@ -3,10 +3,11 @@
 import { createServerClient } from '@supabase/ssr';
 import { cookies } from 'next/headers';
 import type { RunObjective, ModelPreference } from '@/lib/types';
+import { hasProAccess } from '@/lib/billing/pro-access';
 
-// Generate unique ID
+// Generate cryptographically secure random ID
 function generateId() {
-  return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  return crypto.randomUUID();
 }
 
 /**
@@ -101,7 +102,32 @@ export async function createRun(
       return { success: false, error: 'Usuário não autenticado' };
     }
     
-    // 2. Check credits (only for simulados, flashcards are FREE)
+    // 2. Check Pro status for non-flashcard objectives
+    // Free users CAN generate flashcards from uploaded sources
+    // but simulados and other advanced objectives require Pro
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('is_pro, subscription_status, subscription_period_end')
+      .eq('id', user.id)
+      .single();
+
+    const isPro = hasProAccess(profile);
+    
+    if (!isPro && objective !== 'flashcards') {
+      return { 
+        success: false, 
+        error: 'Este tipo de geração é exclusivo para usuários Pro. Faça upgrade para usar este recurso.' 
+      };
+    }
+
+    if (!isPro && targetCount > 10) {
+      return {
+        success: false,
+        error: 'Usuários gratuitos estão limitados a 10 itens por geração. Faça upgrade para gerar mais.'
+      };
+    }
+    
+    // 3. Check credits (only for simulados, flashcards are FREE for Pro)
     const requiresCredits = objective !== 'flashcards';
     
     if (requiresCredits) {
@@ -123,13 +149,35 @@ export async function createRun(
       return { success: false, error: 'Fonte não encontrada' };
     }
     
-    if (source.status !== 'concluido' && source.status !== 'ready') {
+    if (source.status !== 'concluido') {
       return { success: false, error: 'Fonte ainda não foi processada' };
+    }
+    
+    // ================================================================
+    // DECK OWNERSHIP VALIDATION (IDOR Prevention)
+    // ================================================================
+    let validatedDeckId: string | null = null;
+    if (deckId) {
+      const { data: deck, error: deckError } = await supabase
+        .from('decks')
+        .select('id')
+        .eq('id', deckId)
+        .eq('user_id', user.id)
+        .single();
+
+      if (deckError || !deck) {
+        return { success: false, error: 'Deck não encontrado ou acesso negado' };
+      }
+      validatedDeckId = deck.id;
     }
     
     // 4. Create the run
     const now = Date.now();
     const runId = generateId();
+    
+    // SECURITY: Server-side targetCount enforcement to prevent abuse
+    const MAX_TARGET_COUNT = 50;
+    const validatedTargetCount = Math.min(Math.max(1, targetCount), MAX_TARGET_COUNT);
     
     const { error: insertError } = await supabase
       .from('runs')
@@ -137,10 +185,10 @@ export async function createRun(
         id: runId,
         user_id: user.id,
         source_id: sourceId,
-        deck_id: deckId || null,
+        deck_id: validatedDeckId,
         objective,
         model_preference: modelPreference,
-        target_count: targetCount,
+        target_count: validatedTargetCount,
         status: 'pendente',
         attempt_count: 0,
         items_generated: 0,
@@ -163,6 +211,7 @@ export async function createRun(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'x-internal-secret': process.env.SUPABASE_SERVICE_ROLE_KEY || '',
       },
       body: JSON.stringify({ runId }),
     }).catch(err => {

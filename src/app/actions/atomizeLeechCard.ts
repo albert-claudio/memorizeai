@@ -19,26 +19,35 @@ interface AtomicCard {
   back: string;
 }
 
-// System message para atomização de leeches
-const SYSTEM_MESSAGE = `Você é um especialista em aprendizado e memória.
+// System message para atomização de leeches com contexto jurídico
+const SYSTEM_MESSAGE = `Você é um especialista em aprendizado e memória para estudantes de Direito.
 
 Sua tarefa é analisar um flashcard que o aluno está tendo MUITA dificuldade (errou mais de 8 vezes) e dividí-lo em cards menores e mais simples ("Atomic Cards").
 
-REGRAS:
+REGRAS DE ATOMIZAÇÃO:
 1. O card original está muito complexo ou com informação demais
 2. Divida em 2-4 cards menores, cada um com UMA única informação
 3. Use a técnica do "Minimum Information Principle"
 4. Cada card atômico deve testar apenas UMA coisa
 5. Mantenha as perguntas objetivas e respostas curtas
 
-EXEMPLO:
+REGRAS ESPECIAIS PARA DIREITO:
+6. Para termos abstratos, crie um card com EXEMPLO PRÁTICO do dia a dia (Mudança de Contexto)
+7. Para definições longas, separe: conceito, requisitos, efeitos, exceções
+8. Para prazos/números, isole cada prazo em um card separado
+9. Para exceções, compare sempre com a regra geral
+10. Use linguagem simples - evite juridiquês quando possível
+
+EXEMPLO de Atomização:
 Card complexo: "Quais são os requisitos da usucapião extraordinária?"
 → Dividir em:
 - "Qual o prazo da usucapião extraordinária?" → "15 anos (ou 10 anos com moradia)"
 - "A usucapião extraordinária exige justo título?" → "Não, dispensa justo título e boa-fé"
 - "A usucapião extraordinária exige boa-fé?" → "Não, dispensa boa-fé"
+- [CONTEXTO] "João mora há 15 anos em casa abandonada, cuida do terreno e ninguém reclama. Ele pode virar dono?" → "Sim, por usucapião extraordinária"
 
 Responda APENAS com JSON válido no formato sugerido.`;
+
 
 /**
  * Analisa um card "leech" e sugere divisão em cards atômicos usando IA
@@ -51,6 +60,12 @@ export async function atomizeLeechCard(
   atomicCards: AtomicCard[];
   error?: string;
 }> {
+  // SECURITY: Auth check — prevent unauthenticated API abuse
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) {
+    return { success: false, suggestion: '', atomicCards: [], error: 'Usuário não autenticado' };
+  }
   
   console.log(`[Leech] Analisando card leech: "${card.front.substring(0, 50)}..."`);
 
@@ -161,15 +176,28 @@ export async function applyAtomization(
   if (!user) {
     return { success: false, cardsCreated: 0, error: 'Usuário não autenticado' };
   }
+
+  // SECURITY: Validate deck ownership — prevent IDOR
+  const { data: deck, error: deckError } = await supabase
+    .from('decks')
+    .select('id')
+    .eq('id', originalCard.deck_id)
+    .eq('user_id', user.id)
+    .single();
+
+  if (deckError || !deck) {
+    return { success: false, cardsCreated: 0, error: 'Deck não encontrado ou acesso negado' };
+  }
   
   const now = Date.now();
   
   try {
-    // Soft delete do card original
+    // SECURITY: Soft delete with ownership check — only delete card if it belongs to user's deck
     const { error: deleteError } = await supabase
       .from('cards')
       .update({ deleted_at: now, updated_at: now })
-      .eq('id', originalCard.id);
+      .eq('id', originalCard.id)
+      .eq('deck_id', deck.id);
     
     if (deleteError) {
       throw deleteError;

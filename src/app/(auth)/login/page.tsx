@@ -144,6 +144,38 @@ const styles = {
     fontSize: 14,
     marginBottom: 16,
   },
+  warning: {
+    background: 'rgba(251, 191, 36, 0.1)',
+    border: '1px solid rgba(251, 191, 36, 0.3)',
+    borderRadius: 12,
+    padding: '16px',
+    marginBottom: 16,
+  },
+  success: {
+    background: 'rgba(34, 197, 94, 0.1)',
+    border: '1px solid rgba(34, 197, 94, 0.3)',
+    borderRadius: 12,
+    padding: '12px 16px',
+    color: '#4ADE80',
+    fontSize: 14,
+    marginBottom: 16,
+  },
+  resendButton: {
+    background: 'rgba(251, 191, 36, 0.2)',
+    border: '1px solid rgba(251, 191, 36, 0.4)',
+    borderRadius: 8,
+    padding: '10px 16px',
+    color: '#FBBF24',
+    fontSize: 14,
+    fontWeight: 600,
+    cursor: 'pointer',
+    transition: 'all 0.2s ease',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginTop: 12,
+  },
 };
 
 export default function LoginPage() {
@@ -154,10 +186,38 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
   const [error, setError] = useState('');
+  const [emailNotConfirmed, setEmailNotConfirmed] = useState(false);
+  const [resendLoading, setResendLoading] = useState(false);
+  const [resendSuccess, setResendSuccess] = useState(false);
+
+  const handleResendConfirmation = async () => {
+    setResendLoading(true);
+    setResendSuccess(false);
+    
+    try {
+      const supabase = createClient();
+      const { error } = await supabase.auth.resend({
+        type: 'signup',
+        email: email,
+      });
+
+      if (error) {
+        setError('Erro ao reenviar email. Tente novamente.');
+      } else {
+        setResendSuccess(true);
+      }
+    } catch {
+      setError('Erro ao reenviar email. Tente novamente.');
+    } finally {
+      setResendLoading(false);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    setEmailNotConfirmed(false);
+    setResendSuccess(false);
     setLoading(true);
 
     try {
@@ -171,7 +231,7 @@ export default function LoginPage() {
         if (error.message.includes('Invalid login credentials')) {
           setError('E-mail ou senha incorretos.');
         } else if (error.message.includes('Email not confirmed')) {
-          setError('E-mail não confirmado. Verifique sua caixa de entrada e clique no link de confirmação.');
+          setEmailNotConfirmed(true);
         } else {
           setError(error.message);
         }
@@ -226,6 +286,52 @@ export default function LoginPage() {
 
       {/* Error Message */}
       {error && <div style={styles.error}>{error}</div>}
+
+      {/* Email Not Confirmed Warning */}
+      {emailNotConfirmed && (
+        <div style={styles.warning}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#FBBF24" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: 2 }}>
+              <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
+              <polyline points="22,6 12,13 2,6"/>
+            </svg>
+            <div style={{ flex: 1 }}>
+              <p style={{ color: '#FBBF24', fontWeight: 600, fontSize: 15, marginBottom: 4 }}>
+                Confirme seu e-mail
+              </p>
+              <p style={{ color: 'var(--text-secondary)', fontSize: 14, lineHeight: 1.5 }}>
+                Enviamos um link de confirmação para <strong style={{ color: 'var(--text-primary)' }}>{email}</strong>. 
+                Verifique sua caixa de entrada e spam.
+              </p>
+              {resendSuccess ? (
+                <div style={{ ...styles.success, marginTop: 12, marginBottom: 0 }}>
+                  ✓ Email reenviado com sucesso!
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleResendConfirmation}
+                  disabled={resendLoading}
+                  style={{
+                    ...styles.resendButton,
+                    opacity: resendLoading ? 0.7 : 1,
+                    cursor: resendLoading ? 'wait' : 'pointer',
+                  }}
+                >
+                  {resendLoading ? (
+                    <>
+                      <Icons.Loader />
+                      Reenviando...
+                    </>
+                  ) : (
+                    'Reenviar email de confirmação'
+                  )}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
       
       {/* Social Buttons */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 24 }}>

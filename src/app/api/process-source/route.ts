@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import crypto from 'crypto';
+import { requireAuth, requireAuthAndOwnership, isAuthSuccess } from '@/lib/auth/auth-guard';
 
 export const maxDuration = 120; // 2 minutes timeout
 export const dynamic = 'force-dynamic';
 
-// Generate unique ID
+// Generate cryptographically secure random ID
 function generateId(): string {
-  return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  return crypto.randomUUID();
 }
 
 // Generate SHA-256 hash for content
@@ -72,11 +73,23 @@ function chunkText(text: string, chunkSize = 1000, overlap = 100): Array<{ conte
  * LOCAL Processing API - processes sources without Edge Function
  * POST /api/process-source
  * Body: { sourceId: string, extractedText: string }
+ * 
+ * SECURITY:
+ * - Requires authenticated user with Pro subscription
+ * - Validates source ownership (IDOR protection)
  */
 export async function POST(request: NextRequest) {
   const startTime = Date.now();
   
   try {
+    // ============================================================
+    // SECURITY: Auth check FIRST — before any body validation
+    // ============================================================
+    const authCheck = await requireAuth(request);
+    if (!isAuthSuccess(authCheck)) {
+      return authCheck; // Returns 401 error response
+    }
+
     const { sourceId, extractedText } = await request.json();
     
     if (!sourceId || !extractedText) {
@@ -84,6 +97,15 @@ export async function POST(request: NextRequest) {
         { error: 'sourceId and extractedText are required' },
         { status: 400 }
       );
+    }
+
+    // ============================================================
+    // SECURITY: Require auth + ownership validation (no Pro gate —
+    // upload quota was checked at extract-document step)
+    // ============================================================
+    const authResult = await requireAuthAndOwnership(sourceId, 'sources', request);
+    if (!isAuthSuccess(authResult)) {
+      return authResult; // Returns 401/403 error response
     }
 
     // Create Supabase client with service role for database operations
@@ -94,7 +116,7 @@ export async function POST(request: NextRequest) {
     // Use service key if available, otherwise use anon key
     const supabase = createClient(supabaseUrl, supabaseServiceKey || supabaseAnonKey);
 
-    console.log(`[process-source] Starting processing for source ${sourceId}`);
+    console.log(`[process-source] Starting processing for source ${sourceId} by user ${authResult.user.id}`);
 
     // Update status to processing (processando)
     await supabase

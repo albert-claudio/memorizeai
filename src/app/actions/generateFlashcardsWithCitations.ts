@@ -1,6 +1,7 @@
 'use server';
 
 import Groq from 'groq-sdk';
+import { createClient } from '@/lib/supabase/server';
 
 const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY,
@@ -149,6 +150,13 @@ function validateFlashcardWithCitation(
 export async function generateFlashcardsWithCitations(
   chunks: ChunkWithContext[]
 ): Promise<FlashcardWithCitation[]> {
+  // SECURITY: Auth check — prevent unauthenticated API abuse
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) {
+    throw new Error('Usuário não autenticado');
+  }
+
   if (chunks.length === 0) {
     throw new Error('Nenhum chunk fornecido para geração');
   }
