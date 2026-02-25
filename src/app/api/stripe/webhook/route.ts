@@ -678,6 +678,7 @@ export async function POST(request: NextRequest) {
           is_pro: boolean;
           subscription_status: string;
           subscription_tier: string;
+          stripe_customer_id: string;
           updated_at: number;
           subscription_period_end?: number;
         } = {
