@@ -3,6 +3,9 @@ export interface Deck {
   user_id: string;
   title: string;
   description: string | null;
+  concurso?: string | null;
+  materia?: string | null;
+  tema?: string | null;
   created_at: number; // BIGINT timestamp
   updated_at: number;
   deleted_at: number | null;
@@ -107,7 +110,7 @@ export interface Run {
   objective: 'flashcards' | 'questoes_banca' | 'logica_juridica';
   model_preference: 'groq' | 'gemini' | 'auto';
   target_count: number;
-  status: 'pendente' | 'processando' | 'concluido' | 'erro';
+  status: 'pendente' | 'processando' | 'concluido' | 'erro' | 'base_insuficiente';
   model_used: string | null;
   attempt_count: number;
   items_generated: number;
@@ -117,7 +120,12 @@ export interface Run {
   created_at: number;
   updated_at: number;
   deleted_at: number | null;
+  banca?: 'FCC' | 'FGV' | 'CESPE' | null;
+  dificuldade?: 'facil' | 'medio' | 'dificil' | 'muito_dificil' | null;
 }
+
+export type Banca = 'FCC' | 'FGV' | 'CESPE';
+export type Dificuldade = 'facil' | 'medio' | 'dificil' | 'muito_dificil';
 
 export interface UserCredits {
   user_id: string;

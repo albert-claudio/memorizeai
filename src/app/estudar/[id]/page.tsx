@@ -25,6 +25,7 @@ export default function EstudarPage() {
   
   const [user, setUser] = useState<User | null>(null);
   const [loadingUser, setLoadingUser] = useState(true);
+  const [isPro, setIsPro] = useState(false);
 
   useEffect(() => {
     const checkUser = async () => {
@@ -35,6 +36,16 @@ export default function EstudarPage() {
         return;
       }
       setUser(user);
+
+      // Fetch Pro status
+      try {
+        const res = await fetch('/api/stripe/subscription-status', { cache: 'no-store' });
+        if (res.ok) {
+          const sub = await res.json();
+          setIsPro(Boolean(sub?.isActive && sub?.isPro));
+        }
+      } catch { /* free tier fallback */ }
+
       setLoadingUser(false);
     };
     checkUser();
@@ -56,7 +67,7 @@ export default function EstudarPage() {
     relearningQueue,
     modals,
     isTransitioning
-  } = useStudySession(deckId, user?.id);
+  } = useStudySession(deckId, user?.id, isPro);
 
   const {
     dragOffset,

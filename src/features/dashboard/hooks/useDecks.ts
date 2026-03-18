@@ -33,10 +33,10 @@ export function useDecks(userId: string | undefined) {
     fetchDecks();
   }, [fetchDecks]);
 
-  const addDeck = async (title: string, description: string) => {
+  const addDeck = async (title: string, description: string, concurso?: string | null, materia?: string | null, tema?: string | null) => {
     if (!userId) return null;
     try {
-      const newDeck = await deckService.createDeck(userId, title, description);
+      const newDeck = await deckService.createDeck(userId, title, description, concurso, materia, tema);
       setDecks(prev => [newDeck, ...prev]);
       setCardCounts(prev => ({ ...prev, [newDeck.id]: 0 }));
       return newDeck;
@@ -47,9 +47,9 @@ export function useDecks(userId: string | undefined) {
     }
   };
 
-  const updateDeck = async (deckId: string, title: string, description: string) => {
+  const updateDeck = async (deckId: string, title: string, description: string, concurso?: string | null, materia?: string | null, tema?: string | null) => {
     try {
-      const updatedDeck = await deckService.updateDeck(deckId, title, description);
+      const updatedDeck = await deckService.updateDeck(deckId, title, description, concurso, materia, tema);
       setDecks(prev => prev.map(d => d.id === updatedDeck.id ? updatedDeck : d));
       return updatedDeck;
     } catch (err: unknown) {

@@ -15,6 +15,7 @@ import {
   calculateInitialStability,
   updateDifficulty,
   processReview,
+  DEFAULT_CONFIG,
   formatInterval,
   getIntervalPreviews,
   INITIAL_DIFFICULTY,
@@ -135,6 +136,11 @@ describe('calculateStabilityIncrease (Spacing Effect)', () => {
   test('stability increase is always >= 1', () => {
     const sInc = calculateStabilityIncrease(5, 1, 0.9, 2, DEFAULT_WEIGHTS);
     expect(sInc).toBeGreaterThanOrEqual(1);
+  });
+
+  test('mature card with high retrievability can have only a small gain', () => {
+    const sInc = calculateStabilityIncrease(5, 120, 0.99, 2, DEFAULT_WEIGHTS);
+    expect(sInc).toBeLessThan(1.1);
   });
 
   test('Easy grade gives bigger boost than Good', () => {
@@ -278,6 +284,20 @@ describe('processReview (relearning)', () => {
     expect(result.newState.relearning_step).toBeNull();
   });
 
+  test('completing relearning preserves post-lapse stability', () => {
+    const postLapseStability = 0.63;
+    const result = processReview({
+      stability: postLapseStability,
+      difficulty: 7,
+      lapses: 1,
+      relearning_step: 2, // Last step
+    }, 2, Date.now(), DEFAULT_CONFIG, false);
+
+    expect(result.newState.relearning_step).toBeNull();
+    expect(result.newState.stability).toBeCloseTo(postLapseStability, 2);
+    expect(result.newState.stability).toBeLessThan(DEFAULT_WEIGHTS.w2);
+  });
+
   test('failing during relearning restarts from step 0', () => {
     const result = processReview({
       stability: 0.5,
@@ -400,6 +420,16 @@ describe('getIntervalPreviews (deterministic)', () => {
     expect(p1[1]).toBe(p2[1]);
     expect(p1[2]).toBe(p2[2]);
     expect(p1[3]).toBe(p2[3]);
+  });
+
+  test('previews respect relearning steps', () => {
+    const state = { stability: 0.63, difficulty: 7, relearning_step: 1 };
+    const previews = getIntervalPreviews(state, DEFAULT_CONFIG);
+
+    expect(previews[0]).toBe('1 min');
+    expect(previews[1]).toBe('2 h');
+    expect(previews[2]).toBe('2 h');
+    expect(previews[3]).toBe('2 h');
   });
 });
 

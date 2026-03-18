@@ -1,12 +1,114 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
-import { stripe, getOrCreateCustomer, PRO_PRICE_ID } from '@/lib/billing/stripe';
+import { stripe, getOrCreateCustomer, getSubscriptionStatus } from '@/lib/billing/stripe';
+import { getCheckoutPlan } from '@/lib/billing/plans';
+import { getBaseUrl } from '@/lib/url';
+
+const ALLOWED_REQUEST_KEYS = new Set(['planKey']);
+const FORBIDDEN_CLIENT_PRICING_KEYS = [
+  'priceId',
+  'price_id',
+  'price',
+  'amount',
+  'discount_value',
+  'plan_price',
+  'coupon',
+  'promotion_code',
+  'trial_period_days',
+  'duration',
+  'billing_cycle',
+] as const;
+
+function parseBody(raw: unknown): Record<string, unknown> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return {};
+  }
+  return raw as Record<string, unknown>;
+}
+
+function normalizeOrigin(value: string | null): string | null {
+  if (!value) {
+    return null;
+  }
+
+  try {
+    return new URL(value).origin;
+  } catch {
+    return null;
+  }
+}
+
+function validateOrigin(request: NextRequest): { valid: true; origin: string } | { valid: false } {
+  const requestOrigin = normalizeOrigin(
+    request.headers.get('origin') || request.headers.get('referer')
+  );
+  if (!requestOrigin) {
+    return { valid: false };
+  }
+
+  const allowedOrigins = new Set(
+    [
+      request.nextUrl.origin,
+      getBaseUrl(),
+      'https://memoriza.app',
+      'https://www.memoriza.app',
+      'http://localhost:3000',
+    ]
+      .map((origin) => normalizeOrigin(origin ?? null))
+      .filter((origin): origin is string => Boolean(origin))
+  );
+
+  if (!allowedOrigins.has(requestOrigin)) {
+    return { valid: false };
+  }
+
+  return { valid: true, origin: requestOrigin };
+}
+
+function buildCheckoutIdempotencyKey(userId: string, planKey: string): string {
+  // Prevent duplicate sessions caused by repeated clicks in a short window.
+  const bucket = Math.floor(Date.now() / 20_000);
+  return `checkout:${userId}:${planKey}:${bucket}`;
+}
 
 export async function POST(request: NextRequest) {
   try {
-    // ================================================================
-    // 1. AUTHENTICATE USER
-    // ================================================================
+    const body = parseBody(await request.json().catch(() => ({})));
+
+    const forbiddenKey = FORBIDDEN_CLIENT_PRICING_KEYS.find((key) =>
+      Object.prototype.hasOwnProperty.call(body, key)
+    );
+    if (forbiddenKey) {
+      return NextResponse.json(
+        { error: `Campo não permitido no checkout: ${forbiddenKey}` },
+        { status: 400 }
+      );
+    }
+
+    const unexpectedKeys = Object.keys(body).filter((key) => !ALLOWED_REQUEST_KEYS.has(key));
+    if (unexpectedKeys.length > 0) {
+      return NextResponse.json(
+        { error: `Payload inválido. Campos não aceitos: ${unexpectedKeys.join(', ')}` },
+        { status: 400 }
+      );
+    }
+
+    const planKey = typeof body.planKey === 'string' ? body.planKey.trim() : '';
+    if (!planKey) {
+      return NextResponse.json(
+        { error: 'planKey é obrigatório' },
+        { status: 400 }
+      );
+    }
+
+    const plan = getCheckoutPlan(planKey);
+    if (!plan) {
+      return NextResponse.json(
+        { error: 'Plano inválido ou indisponível' },
+        { status: 400 }
+      );
+    }
+
     const supabase = await createClient();
     const { data: { user }, error: authError } = await supabase.auth.getUser();
 
@@ -17,90 +119,75 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // ================================================================
-    // 2. GET PRICE ID - Only allow configured PRO_PRICE_ID
-    // ================================================================
-    const body = await request.json().catch(() => ({}));
-    const requestedPriceId = body.priceId;
-    
-    // SECURITY: Only allow the configured PRO_PRICE_ID, not arbitrary price IDs
-    if (!PRO_PRICE_ID) {
-      return NextResponse.json(
-        { error: 'Price ID não configurado' },
-        { status: 500 }
-      );
-    }
-    
-    // If client sends a priceId, it MUST match our configured PRO_PRICE_ID
-    if (requestedPriceId && requestedPriceId !== PRO_PRICE_ID) {
-      console.warn(`[Stripe] Rejected invalid priceId: ${requestedPriceId}`);
-      return NextResponse.json(
-        { error: 'Invalid price ID' },
-        { status: 400 }
-      );
-    }
-    
-    const priceId = PRO_PRICE_ID;
+    const subscriptionStatus = await getSubscriptionStatus(user.id);
+    const isSameTierActive =
+      subscriptionStatus.isPro &&
+      subscriptionStatus.tier === plan.tier &&
+      (subscriptionStatus.status === 'active' || subscriptionStatus.status === 'past_due');
 
-    // ================================================================
-    // 3. GET OR CREATE STRIPE CUSTOMER
-    // ================================================================
+    if (isSameTierActive) {
+      return NextResponse.json(
+        { error: 'Plano já está ativo para este usuário' },
+        { status: 409 }
+      );
+    }
+
     const customerId = await getOrCreateCustomer(
       user.id,
       user.email || '',
       user.user_metadata?.name
     );
 
-    // ================================================================
-    // 4. SECURITY: Use allowlisted origin only (never trust Origin header)
-    // ================================================================
-    const ALLOWED_ORIGINS = [
-      process.env.NEXT_PUBLIC_APP_URL,
-      'https://memoriza.app',
-      'https://www.memoriza.app',
-    ].filter(Boolean);
+    const originCheck = validateOrigin(request);
+    if (!originCheck.valid) {
+      return NextResponse.json(
+        { error: 'Origem não autorizada' },
+        { status: 403 }
+      );
+    }
 
-    const requestOrigin = request.headers.get('origin');
-    // Only use request origin if it's in our allowlist, otherwise use env default
-    const origin = (requestOrigin && ALLOWED_ORIGINS.includes(requestOrigin))
-      ? requestOrigin
-      : (process.env.NEXT_PUBLIC_APP_URL || 'https://memoriza.app');
+    const origin = originCheck.origin;
+    const idempotencyKey = buildCheckoutIdempotencyKey(user.id, plan.planKey);
 
-    const session = await stripe.checkout.sessions.create({
-      customer: customerId,
-      mode: 'subscription',
-      payment_method_types: ['card'],
-      line_items: [
-        {
-          price: priceId,
-          quantity: 1,
-        },
-      ],
-      // URLs de callback
-      success_url: `${origin}/dashboard?checkout=success&session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${origin}/dashboard?checkout=canceled`,
-      // Metadata para rastreamento
-      metadata: {
-        user_id: user.id,
-      },
-      subscription_data: {
+    const session = await stripe.checkout.sessions.create(
+      {
+        customer: customerId,
+        mode: 'subscription',
+        payment_method_types: ['card'],
+        line_items: [
+          {
+            price: plan.stripePriceId,
+            quantity: 1,
+          },
+        ],
+        success_url: `${origin}/dashboard?checkout=success&session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${origin}/dashboard?checkout=canceled`,
         metadata: {
           user_id: user.id,
+          plan_key: plan.planKey,
         },
+        subscription_data: {
+          metadata: {
+            user_id: user.id,
+            plan_key: plan.planKey,
+          },
+        },
+        locale: 'pt-BR',
+        allow_promotion_codes: false,
       },
-      // Configurações brasileiras
-      locale: 'pt-BR',
-      allow_promotion_codes: true,
-    });
+      {
+        idempotencyKey,
+      }
+    );
 
-    // ================================================================
-    // 5. RETURN SESSION URL FOR REDIRECT
-    // ================================================================
-    return NextResponse.json({
-      sessionId: session.id,
-      url: session.url,
-    });
+    if (!session.url) {
+      return NextResponse.json(
+        { error: 'Checkout indisponível no momento' },
+        { status: 500 }
+      );
+    }
 
+    return NextResponse.json({ url: session.url });
   } catch (error) {
     console.error('[Stripe Checkout] Error:', error);
     return NextResponse.json(

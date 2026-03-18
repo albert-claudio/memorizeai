@@ -27,6 +27,8 @@ export function getStripeClient(): Stripe {
 export const stripe = {
   get customers() { return getStripeClient().customers; },
   get subscriptions() { return getStripeClient().subscriptions; },
+  get invoices() { return getStripeClient().invoices; },
+  get refunds() { return getStripeClient().refunds; },
   get paymentMethods() { return getStripeClient().paymentMethods; },
   get checkout() { return getStripeClient().checkout; },
   get billingPortal() { return getStripeClient().billingPortal; },
@@ -125,15 +127,11 @@ export async function hasActiveSubscription(userId: string): Promise<boolean> {
 
   const { data: profile } = await supabase
     .from('profiles')
-    .select('subscription_status, subscription_period_end')
+    .select('is_pro, subscription_status, subscription_period_end, admin_override_pro')
     .eq('id', userId)
     .single();
 
-  return hasProAccess({
-    is_pro: true,
-    subscription_status: profile?.subscription_status,
-    subscription_period_end: profile?.subscription_period_end,
-  });
+  return hasProAccess(profile);
 }
 
 /**
@@ -149,7 +147,7 @@ export async function getSubscriptionStatus(userId: string): Promise<{
 
   const { data: profile } = await supabase
     .from('profiles')
-    .select('is_pro, subscription_status, subscription_tier, subscription_period_end')
+    .select('is_pro, subscription_status, subscription_tier, subscription_period_end, admin_override_pro')
     .eq('id', userId)
     .single();
 

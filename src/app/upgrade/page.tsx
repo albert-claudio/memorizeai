@@ -1,7 +1,9 @@
-﻿'use client';
+'use client';
 
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
+import { trackAuthenticated } from '@/lib/analytics/tracker';
+import { BillingBanner } from '@/components/BillingBanner';
 
 // ============================================================================
 // ICONS
@@ -45,6 +47,7 @@ interface SubscriptionStatus {
   status: string;
   tier: string;
   periodEnd: number | null;
+  cancelAtPeriodEnd: boolean;
   isActive: boolean;
 }
 
@@ -109,6 +112,7 @@ export default function UpgradePage() {
 
     loadSubscription();
     loadOffer();
+    trackAuthenticated('upgrade_view');
 
     return () => {
       mounted = false;
@@ -117,10 +121,12 @@ export default function UpgradePage() {
 
   const handleUpgrade = async () => {
     setCheckoutLoading(true);
+    trackAuthenticated('checkout_click', { source: 'upgrade_page' });
     try {
       const response = await fetch('/api/stripe/create-checkout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ planKey: 'pro_monthly' }),
       });
       const data = await response.json();
       if (data.url) {
@@ -164,12 +170,12 @@ export default function UpgradePage() {
 
   const features = [
     'Decks ilimitados',
-    'Cards ilimitados',
-    'Upload de PDF, DOCX, PPTX',
-    'Geracao de cards por IA',
-    'Repeticao espacada (FSRS)',
-    'Analytics completo',
-    'Suporte prioritario',
+    'Até 10.000 cards por deck',
+    'Uploads ilimitados de PDF, DOCX e PPTX',
+    'Geracao ilimitada de flashcards por IA',
+    'Simulados por banca: FGV, FCC e CESPE',
+    'FSRS avancado com ajuste de retencao',
+    'Revisao detalhada de erros e reforco',
   ];
 
   return (
@@ -235,6 +241,13 @@ export default function UpgradePage() {
           width: '100%',
           maxWidth: 420,
         }}>
+          {/* Billing status banner */}
+          {subscription && (
+            <div style={{ marginBottom: 20 }}>
+              <BillingBanner subscription={subscription} />
+            </div>
+          )}
+
           <div style={{
             background: 'linear-gradient(135deg, rgba(99, 102, 241, 0.1) 0%, rgba(139, 92, 246, 0.1) 50%, rgba(236, 72, 153, 0.1) 100%)',
             border: '2px solid rgba(99, 102, 241, 0.3)',

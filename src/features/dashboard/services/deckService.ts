@@ -2,6 +2,12 @@
 import { createClient } from '@/lib/supabase/client';
 import type { Deck } from '@/lib/types';
 
+const normalizeStr = (str?: string | null) => {
+  if (!str) return null;
+  const val = str.replace(/\s+/g, ' ').trim();
+  return val || null;
+};
+
 export const deckService = {
   async getDecks(userId: string) {
     const supabase = createClient();
@@ -38,7 +44,7 @@ export const deckService = {
     return counts;
   },
 
-  async createDeck(userId: string, title: string, description: string) {
+  async createDeck(userId: string, title: string, description: string, concurso?: string | null, materia?: string | null, tema?: string | null) {
     const supabase = createClient();
     const now = Date.now();
     const id = `${now}-${Math.random().toString(36).substr(2, 9)}`; // Keep original ID generation logic
@@ -50,6 +56,9 @@ export const deckService = {
         user_id: userId,
         title: title.trim(),
         description: description.trim() || null,
+        concurso: normalizeStr(concurso),
+        materia: normalizeStr(materia),
+        tema: normalizeStr(tema),
         created_at: now,
         updated_at: now,
       })
@@ -60,13 +69,16 @@ export const deckService = {
     return data as Deck;
   },
 
-  async updateDeck(deckId: string, title: string, description: string) {
+  async updateDeck(deckId: string, title: string, description: string, concurso?: string | null, materia?: string | null, tema?: string | null) {
     const supabase = createClient();
     const { data, error } = await supabase
       .from('decks')
       .update({
         title: title.trim(),
         description: description.trim() || null,
+        concurso: normalizeStr(concurso),
+        materia: normalizeStr(materia),
+        tema: normalizeStr(tema),
         updated_at: Date.now(),
       })
       .eq('id', deckId)

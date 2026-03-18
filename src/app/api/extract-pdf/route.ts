@@ -168,7 +168,7 @@ export async function POST(request: NextRequest) {
     // ================================================================
     const { data: profile } = await supabase
       .from('profiles')
-      .select('is_pro, subscription_status, subscription_period_end')
+      .select('is_pro, subscription_status, subscription_period_end, admin_override_pro')
       .eq('id', user.id)
       .single();
 

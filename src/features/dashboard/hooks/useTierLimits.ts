@@ -7,7 +7,8 @@ export interface TierLimits {
   maxCardsPerDeck: number;
   currentDeckCount: number;
   isPro: boolean;
-  hasAI: boolean;
+  hasFlashcardGeneration: boolean;
+  hasSimulados: boolean;
   hasUploads: boolean;
 }
 

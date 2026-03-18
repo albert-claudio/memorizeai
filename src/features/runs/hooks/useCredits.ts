@@ -1,17 +1,23 @@
+/**
+ * @deprecated Use useMonthlyUsage instead.
+ * This file is kept for backwards compatibility but is no longer used.
+ */
 
 import { useState, useEffect } from 'react';
-import { getUserCredits, type UserCreditsInfo } from '@/app/actions/createRun';
+import { getMonthlyUsage } from '@/app/actions/createRun';
+import type { MonthlyUsage } from '@/lib/billing/run-entitlement';
 
+/** @deprecated Use useMonthlyUsage instead */
 export function useCredits() {
-  const [credits, setCredits] = useState<UserCreditsInfo | null>(null);
+  const [usage, setUsage] = useState<MonthlyUsage | null>(null);
   const [loading, setLoading] = useState(true);
 
   const fetchCredits = async () => {
     try {
-      const userCredits = await getUserCredits();
-      setCredits(userCredits);
+      const data = await getMonthlyUsage();
+      setUsage(data);
     } catch (err) {
-      console.error('Failed to fetch credits:', err);
+      console.error('Failed to fetch usage:', err);
     } finally {
       setLoading(false);
     }
@@ -21,15 +27,14 @@ export function useCredits() {
     fetchCredits();
   }, []);
 
-  const deductCredit = () => {
-    if (credits) {
-      setCredits({
-        ...credits,
-        planRunsRemaining: Math.max(0, credits.planRunsRemaining - 1),
-        totalCredits: credits.totalCredits - 1,
-      });
-    }
-  };
+  // Shimmed credits interface for backwards compat
+  const credits = usage ? {
+    planRunsRemaining: 0,
+    extraCredits: 0,
+    totalCredits: 0,
+  } : null;
+
+  const deductCredit = () => {};
 
   return {
     credits,

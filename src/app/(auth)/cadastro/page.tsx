@@ -4,6 +4,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
+import { track } from '@/lib/analytics/tracker';
 
 // ============================================================================
 // ICONS
@@ -229,6 +230,9 @@ export default function CadastroPage() {
         options: {
           data: {
             full_name: name,
+            terms_accepted_at: new Date().toISOString(),
+            terms_version: '2026-03-16',
+            privacy_version: '2026-03-16',
           },
         },
       });
@@ -243,6 +247,7 @@ export default function CadastroPage() {
       }
 
       setSuccess(true);
+      track('signup_submit', { method: 'email' });
     } catch {
       setError('Erro ao criar conta. Tente novamente.');
     } finally {

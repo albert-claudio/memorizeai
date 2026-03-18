@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
+import { track } from '@/lib/analytics/tracker';
 
 // ============================================================================
 // ICONS
@@ -133,7 +134,7 @@ function Navbar() {
             WebkitBackgroundClip: 'text',
             WebkitTextFillColor: 'transparent',
             backgroundClip: 'text',
-          }}>Vimens</span>
+          }}>Memoriza</span>
         </a>
         
         <Link href="/cadastro" className="btn-primary navbar-cta">
@@ -150,6 +151,8 @@ function Navbar() {
 function Hero() {
   const [flipped, setFlipped] = useState(false);
   const exams = ['OAB', 'ENEM', 'Bancos', 'Receita', 'INSS', 'PF', 'TJ', 'TRF'];
+
+  useEffect(() => { track('landing_view'); }, []);
 
   return (
     <section style={{ paddingTop: 120, paddingBottom: 80, position: 'relative', overflow: 'hidden' }}>
@@ -203,7 +206,7 @@ function Hero() {
               marginBottom: 28,
               animationDelay: '0.3s'
             }}>
-              <Link href="/cadastro" className="btn-primary">
+              <Link href="/cadastro" className="btn-primary" onClick={() => track('signup_click', { source: 'hero_cta' })}>
                 <Icons.Rocket />
                 Começar Grátis
               </Link>
@@ -298,7 +301,7 @@ function Hero() {
 function HowItWorks() {
   const steps = [
     { num: '01', title: 'Envie seu material', desc: 'PDF, texto ou anotações. Qualquer conteúdo que você queira memorizar.' },
-    { num: '02', title: 'Gere e aprove os cards', desc: 'O Vimens cria os flashcards. Você edita, aprova ou descarta antes de estudar.' },
+    { num: '02', title: 'Gere e aprove os cards', desc: 'O Memoriza cria os flashcards. Você edita, aprova ou descarta antes de estudar.' },
     { num: '03', title: 'Revise todo dia', desc: 'O sistema agenda as próximas revisões com base nos seus acertos e erros.' },
   ];
 
@@ -544,10 +547,12 @@ function Pricing() {
 
   const handlePremiumCheckout = async () => {
     setCheckoutLoading(true);
+    track('checkout_click');
     try {
       const response = await fetch('/api/stripe/create-checkout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ planKey: 'pro_monthly' }),
       });
 
       const data = await response.json();
@@ -577,11 +582,11 @@ function Pricing() {
       period: 'para sempre',
       features: [
         { text: 'Até 3 decks', ok: true },
-        { text: '50 cards/deck', ok: true },
-        { text: 'Repetição espaçada', ok: true },
-        { text: 'Analytics básico', ok: true },
-        { text: 'Upload PDF', ok: false },
-        { text: 'Geração de cards', ok: false },
+        { text: 'Até 50 cards por deck', ok: true },
+        { text: '3 uploads por semana (PDF, DOCX, PPTX)', ok: true },
+        { text: 'Flashcards limitados', ok: true },
+        { text: 'Revisão básica para estudar seus cards', ok: true },
+        { text: 'Sem simulados por banca (FGV, FCC, CESPE)', ok: false },
       ],
       featured: false
     },
@@ -591,11 +596,11 @@ function Pricing() {
       period: proOffer?.periodLabel || '/mês',
       features: [
         { text: 'Decks ilimitados', ok: true },
-        { text: 'Cards ilimitados', ok: true },
-        { text: 'Repetição avançada', ok: true },
-        { text: 'Analytics completo', ok: true },
-        { text: 'Upload PDF', ok: true },
-        { text: 'Geração de cards', ok: true },
+        { text: 'Até 10.000 cards por deck', ok: true },
+        { text: 'Uploads ilimitados de PDF, DOCX e PPTX', ok: true },
+        { text: 'Geração de cards em grande volume', ok: true },
+        { text: 'Simulados por banca (FGV, FCC, CESPE)', ok: true },
+        { text: 'FSRS avançado + calibração de retenção', ok: true },
       ],
       featured: true
     },
@@ -669,6 +674,9 @@ function Pricing() {
               Cancele quando quiser.
             </span>
           </div>
+          <p style={{ marginTop: 16, fontSize: 13, color: 'var(--text-muted)' }}>
+            No Pro, você libera flashcards e simulados por banca para estudar com mais profundidade.
+          </p>
         </div>
       </div>
     </section>
@@ -717,7 +725,7 @@ function Footer() {
             WebkitBackgroundClip: 'text',
             WebkitTextFillColor: 'transparent',
             backgroundClip: 'text',
-          }}>Vimens</span>
+          }}>Memoriza</span>
         </Link>
         
         <div className="footer-links">
@@ -727,7 +735,7 @@ function Footer() {
         </div>
         
         <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>
-          © 2025 Vimens
+          © 2026 Memoriza
         </p>
       </div>
     </footer>

@@ -1,7 +1,44 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import Stripe from 'stripe';
 import { createClient } from '@/lib/supabase/server';
+import { createClient as createSupabaseAdmin, type SupabaseClient } from '@supabase/supabase-js';
 import { stripe } from '@/lib/billing/stripe';
+import { getBaseUrl } from '@/lib/url';
+
+function normalizeOrigin(value: string | null): string | null {
+  if (!value) {
+    return null;
+  }
+
+  try {
+    return new URL(value).origin;
+  } catch {
+    return null;
+  }
+}
+
+function getRequestOrigin(request: NextRequest): string | null {
+  const originHeader = request.headers.get('origin');
+  if (originHeader) {
+    return normalizeOrigin(originHeader);
+  }
+
+  return normalizeOrigin(request.headers.get('referer'));
+}
+
+function getAllowedOrigins(request: NextRequest): Set<string> {
+  return new Set(
+    [
+      request.nextUrl.origin,
+      getBaseUrl(),
+      'https://memoriza.app',
+      'https://www.memoriza.app',
+      'http://localhost:3000',
+    ]
+      .map((origin) => normalizeOrigin(origin ?? null))
+      .filter((origin): origin is string => Boolean(origin))
+  );
+}
 
 function toUnixMs(value: unknown): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
@@ -41,8 +78,55 @@ function isCancellableStatus(status: Stripe.Subscription.Status): boolean {
   return !['canceled', 'incomplete_expired'].includes(status);
 }
 
-export async function POST() {
+async function resolveStripeCustomerId(
+  supabaseAdmin: SupabaseClient,
+  userId: string
+): Promise<string | null> {
+  // Use admin client to bypass RLS — stripe_customer_id is not exposed via RLS policies
+  const { data: profile, error: profileError } = await supabaseAdmin
+    .from('profiles')
+    .select('stripe_customer_id')
+    .eq('id', userId)
+    .maybeSingle();
+
+  if (profileError) {
+    console.warn('[Stripe Cancel Subscription] Unable to read profile stripe_customer_id:', profileError);
+  }
+
+  if (profile?.stripe_customer_id) {
+    return profile.stripe_customer_id;
+  }
+
+  // Fallback: look for customer_id in subscriptions table (may have multiple rows)
+  const { data: latestSubscription, error: subscriptionError } = await supabaseAdmin
+    .from('subscriptions')
+    .select('stripe_customer_id')
+    .eq('user_id', userId)
+    .eq('status', 'active')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (subscriptionError) {
+    console.warn('[Stripe Cancel Subscription] Unable to read active subscription row:', subscriptionError);
+    return null;
+  }
+
+  return latestSubscription?.stripe_customer_id ?? null;
+}
+
+export async function POST(request: NextRequest) {
   try {
+    const allowedOrigins = getAllowedOrigins(request);
+    const requestOrigin = getRequestOrigin(request);
+
+    if (!requestOrigin || !allowedOrigins.has(requestOrigin)) {
+      return NextResponse.json(
+        { error: 'Origem nao autorizada' },
+        { status: 403 }
+      );
+    }
+
     const supabase = await createClient();
     const { data: { user }, error: authError } = await supabase.auth.getUser();
 
@@ -53,13 +137,13 @@ export async function POST() {
       );
     }
 
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('stripe_customer_id')
-      .eq('id', user.id)
-      .single();
+    const supabaseAdmin = createSupabaseAdmin(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    );
 
-    if (!profile?.stripe_customer_id) {
+    const stripeCustomerId = await resolveStripeCustomerId(supabaseAdmin, user.id);
+    if (!stripeCustomerId) {
       return NextResponse.json(
         { error: 'Nenhuma assinatura ativa encontrada' },
         { status: 400 }
@@ -67,7 +151,7 @@ export async function POST() {
     }
 
     const customerSubscriptions = await stripe.subscriptions.list({
-      customer: profile.stripe_customer_id,
+      customer: stripeCustomerId,
       status: 'all',
       limit: 10,
     });

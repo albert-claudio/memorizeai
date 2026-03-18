@@ -9,8 +9,8 @@ const supabaseAdmin = createClient(
   { auth: { persistSession: false } }
 );
 
-function isBillingE2EEnabled(): boolean {
-  return process.env.BILLING_E2E_ENABLED === 'true';
+function isBillingCheckoutE2EEnabled(): boolean {
+  return process.env.BILLING_CHECKOUT_E2E_ENABLED === 'true' && process.env.NODE_ENV !== 'production';
 }
 
 function hasValidKey(request: NextRequest): boolean {
@@ -39,7 +39,7 @@ function getBaseUrl(request: NextRequest): string {
 
 export async function POST(request: NextRequest) {
   try {
-    if (!isBillingE2EEnabled()) {
+    if (!isBillingCheckoutE2EEnabled()) {
       return NextResponse.json({ error: 'Not found' }, { status: 404 });
     }
 

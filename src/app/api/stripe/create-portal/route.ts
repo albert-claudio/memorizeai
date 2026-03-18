@@ -1,6 +1,42 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { stripe } from '@/lib/billing/stripe';
+import { getBaseUrl } from '@/lib/url';
+
+function normalizeOrigin(value: string | null): string | null {
+  if (!value) {
+    return null;
+  }
+
+  try {
+    return new URL(value).origin;
+  } catch {
+    return null;
+  }
+}
+
+function getRequestOrigin(request: NextRequest): string | null {
+  const originHeader = request.headers.get('origin');
+  if (originHeader) {
+    return normalizeOrigin(originHeader);
+  }
+
+  return normalizeOrigin(request.headers.get('referer'));
+}
+
+function getAllowedOrigins(request: NextRequest): Set<string> {
+  return new Set(
+    [
+      request.nextUrl.origin,
+      getBaseUrl(),
+      'https://memoriza.app',
+      'https://www.memoriza.app',
+      'http://localhost:3000',
+    ]
+      .map((origin) => normalizeOrigin(origin ?? null))
+      .filter((origin): origin is string => Boolean(origin))
+  );
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -12,7 +48,7 @@ export async function POST(request: NextRequest) {
 
     if (authError || !user) {
       return NextResponse.json(
-        { error: 'Não autorizado' },
+        { error: 'Nao autorizado' },
         { status: 401 }
       );
     }
@@ -34,22 +70,21 @@ export async function POST(request: NextRequest) {
     }
 
     // ================================================================
-    // 3. SECURITY: Use allowlisted origin only (never trust Origin header)
+    // 3. SECURITY: Validate Origin (CSRF protection)
     // ================================================================
-    const ALLOWED_ORIGINS = [
-      process.env.NEXT_PUBLIC_APP_URL,
-      'https://memoriza.app',
-      'https://www.memoriza.app',
-    ].filter(Boolean);
+    const allowedOrigins = getAllowedOrigins(request);
+    const requestOrigin = getRequestOrigin(request);
 
-    const requestOrigin = request.headers.get('origin');
-    const origin = (requestOrigin && ALLOWED_ORIGINS.includes(requestOrigin))
-      ? requestOrigin
-      : (process.env.NEXT_PUBLIC_APP_URL || 'https://memoriza.app');
+    if (!requestOrigin || !allowedOrigins.has(requestOrigin)) {
+      return NextResponse.json(
+        { error: 'Origem nao autorizada' },
+        { status: 403 }
+      );
+    }
 
     const session = await stripe.billingPortal.sessions.create({
       customer: profile.stripe_customer_id,
-      return_url: `${origin}/dashboard`,
+      return_url: `${requestOrigin}/dashboard`,
     });
 
     // ================================================================

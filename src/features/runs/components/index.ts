@@ -4,5 +4,7 @@ export * from './RunsHeader';
 export * from './ActiveRunProgress';
 export * from './SourceStep';
 export * from './ObjectiveStep';
+export * from './BancaStep';
+export * from './DifficultyStep';
 export * from './QuantityStep';
 export * from './GenerateRunButton';

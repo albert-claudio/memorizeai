@@ -5,10 +5,17 @@ const mocks = vi.hoisted(() => ({
   createServerClient: vi.fn(),
   getOrCreateCustomer: vi.fn(),
   checkoutSessionCreate: vi.fn(),
+  checkoutSessionRetrieve: vi.fn(),
   portalSessionCreate: vi.fn(),
   webhookConstructEvent: vi.fn(),
   subscriptionRetrieve: vi.fn(),
+  subscriptionList: vi.fn(),
+  subscriptionUpdate: vi.fn(),
+  subscriptionCancel: vi.fn(),
+  invoiceList: vi.fn(),
+  refundCreate: vi.fn(),
   getSubscriptionTier: vi.fn(),
+  getSubscriptionStatus: vi.fn(),
   adminCreateClient: vi.fn(),
   runSecurityChecks: vi.fn(),
   getClientIP: vi.fn(),
@@ -16,7 +23,7 @@ const mocks = vi.hoisted(() => ({
   logWebhookAttempt: vi.fn(),
   recordFailedAttempt: vi.fn(),
   checkEventIdempotencyAtomic: vi.fn(),
-  markEventProcessed: vi.fn(),
+  finalizeEvent: vi.fn(),
 }));
 
 vi.mock('@/lib/supabase/server', () => ({
@@ -25,14 +32,32 @@ vi.mock('@/lib/supabase/server', () => ({
 
 vi.mock('@/lib/billing/stripe', () => ({
   stripe: {
-    checkout: { sessions: { create: mocks.checkoutSessionCreate } },
+    checkout: {
+      sessions: {
+        create: mocks.checkoutSessionCreate,
+        retrieve: mocks.checkoutSessionRetrieve,
+      },
+    },
     billingPortal: { sessions: { create: mocks.portalSessionCreate } },
+    invoices: {
+      list: mocks.invoiceList,
+    },
+    refunds: {
+      create: mocks.refundCreate,
+    },
     webhooks: { constructEvent: mocks.webhookConstructEvent },
-    subscriptions: { retrieve: mocks.subscriptionRetrieve },
+    subscriptions: {
+      retrieve: mocks.subscriptionRetrieve,
+      list: mocks.subscriptionList,
+      update: mocks.subscriptionUpdate,
+      cancel: mocks.subscriptionCancel,
+    },
   },
   getOrCreateCustomer: mocks.getOrCreateCustomer,
   getSubscriptionTier: mocks.getSubscriptionTier,
+  getSubscriptionStatus: mocks.getSubscriptionStatus,
   PRO_PRICE_ID: 'price_pro_test',
+  ENTERPRISE_PRICE_ID: 'price_enterprise_test',
 }));
 
 vi.mock('@supabase/supabase-js', () => ({
@@ -46,38 +71,93 @@ vi.mock('@/lib/security/webhook-security', () => ({
   logWebhookAttempt: mocks.logWebhookAttempt,
   recordFailedAttempt: mocks.recordFailedAttempt,
   checkEventIdempotencyAtomic: mocks.checkEventIdempotencyAtomic,
-  markEventProcessed: mocks.markEventProcessed,
+  finalizeEvent: mocks.finalizeEvent,
 }));
 
 function createServerSupabaseClient(options?: {
   user?: { id: string; email?: string | null; user_metadata?: { name?: string } } | null;
   authError?: unknown;
   profile?: { stripe_customer_id?: string | null } | null;
+  subscription?: { user_id?: string; stripe_customer_id?: string | null; status?: string | null } | null;
 }) {
   const getUser = vi.fn().mockResolvedValue({
     data: { user: options?.user ?? null },
     error: options?.authError ?? null,
   });
 
-  const profileSingle = vi.fn().mockResolvedValue({
-    data: options?.profile ?? null,
-    error: null,
-  });
+  const resolveSelect = (
+    table: string,
+    filters: Array<{ column: string; value: unknown }>
+  ) => {
+    if (table === 'profiles') {
+      const idFilter = filters.find((filter) => filter.column === 'id');
+      if (idFilter && options?.user?.id && idFilter.value !== options.user.id) {
+        return { data: null, error: null };
+      }
+      return { data: options?.profile ?? null, error: null };
+    }
 
-  const from = vi.fn().mockReturnValue({
-    select: vi.fn().mockReturnValue({
-      eq: vi.fn().mockReturnValue({
-        single: profileSingle,
-      }),
-    }),
-  });
+    if (table === 'subscriptions') {
+      const subscription = options?.subscription ?? null;
+      if (!subscription) {
+        return { data: null, error: null };
+      }
+
+      const userFilter = filters.find((filter) => filter.column === 'user_id');
+      const expectedUserId = subscription.user_id ?? options?.user?.id ?? null;
+      if (userFilter && expectedUserId && userFilter.value !== expectedUserId) {
+        return { data: null, error: null };
+      }
+
+      const statusFilter = filters.find((filter) => filter.column === 'status');
+      if (
+        statusFilter &&
+        subscription.status &&
+        statusFilter.value !== subscription.status
+      ) {
+        return { data: null, error: null };
+      }
+
+      return { data: subscription, error: null };
+    }
+
+    return { data: options?.profile ?? null, error: null };
+  };
+
+  const createSelectQuery = (table: string) => {
+    const filters: Array<{ column: string; value: unknown }> = [];
+
+    const query: Record<string, unknown> = {
+      eq(column: string, value: unknown) {
+        filters.push({ column, value });
+        return query;
+      },
+      order() {
+        return query;
+      },
+      limit() {
+        return query;
+      },
+      async single() {
+        return resolveSelect(table, filters);
+      },
+      async maybeSingle() {
+        return resolveSelect(table, filters);
+      },
+    };
+
+    return query;
+  };
+
+  const from = vi.fn((table: string) => ({
+    select: vi.fn().mockImplementation(() => createSelectQuery(table)),
+  }));
 
   return {
     client: {
       auth: { getUser },
       from,
     },
-    profileSingle,
   };
 }
 
@@ -117,6 +197,7 @@ function createAdminSupabaseClient(options?: {
     }
   );
   const profilesUpdate = vi.fn().mockReturnValue({ eq: profilesUpdateEq });
+  const profilesUpsert = vi.fn(async () => ({ error: null }));
   const profilesSelectSingle = vi.fn().mockResolvedValue({
     data: options?.profileLookupByCustomer ?? null,
     error: null,
@@ -173,6 +254,7 @@ function createAdminSupabaseClient(options?: {
       return {
         select: profilesSelect,
         update: profilesUpdate,
+        upsert: profilesUpsert,
       };
     }
 
@@ -190,6 +272,7 @@ function createAdminSupabaseClient(options?: {
   return {
     client: { from },
     profilesUpdate,
+    profilesUpsert,
     subscriptionsUpsert,
     subscriptionsUpdate,
     subscriptionsUpdateEq,
@@ -224,10 +307,24 @@ beforeEach(() => {
   mocks.checkEventIdempotencyAtomic.mockResolvedValue({ isNew: true });
   mocks.logWebhookAttempt.mockResolvedValue(undefined);
   mocks.recordFailedAttempt.mockResolvedValue({ blocked: false, failCount: 1 });
-  mocks.markEventProcessed.mockResolvedValue(undefined);
+  mocks.finalizeEvent.mockResolvedValue(undefined);
   mocks.getSubscriptionTier.mockImplementation((priceId: string | null) => (
     priceId === 'price_pro_test' ? 'pro' : 'free'
   ));
+  mocks.getSubscriptionStatus.mockResolvedValue({
+    isPro: false,
+    status: 'free',
+    tier: 'free',
+    periodEnd: null,
+  });
+  mocks.subscriptionCancel.mockResolvedValue(undefined);
+  mocks.invoiceList.mockResolvedValue({ data: [] });
+  mocks.refundCreate.mockResolvedValue({
+    id: 're_test_123',
+    amount: 9900,
+    currency: 'brl',
+    created: Math.floor(Date.now() / 1000),
+  });
 });
 
 describe('billing checkout', () => {
@@ -247,7 +344,7 @@ describe('billing checkout', () => {
     const request = new NextRequest('https://memoriza.app/api/stripe/create-checkout', {
       method: 'POST',
       headers: { origin: 'https://memoriza.app', 'content-type': 'application/json' },
-      body: JSON.stringify({ priceId: 'price_pro_test' }),
+      body: JSON.stringify({ planKey: 'pro_monthly' }),
     });
 
     const response = await POST(request);
@@ -255,20 +352,27 @@ describe('billing checkout', () => {
 
     expect(response.status).toBe(200);
     expect(json).toEqual({
-      sessionId: 'cs_test_123',
       url: 'https://checkout.stripe.com/test',
     });
     expect(mocks.checkoutSessionCreate).toHaveBeenCalledWith(
       expect.objectContaining({
         customer: 'cus_123',
         mode: 'subscription',
+        allow_promotion_codes: false,
+        metadata: expect.objectContaining({
+          user_id: 'user_1',
+          plan_key: 'pro_monthly',
+        }),
         success_url: expect.stringContaining('https://memoriza.app/dashboard?checkout=success'),
         cancel_url: 'https://memoriza.app/dashboard?checkout=canceled',
+      }),
+      expect.objectContaining({
+        idempotencyKey: expect.any(String),
       })
     );
   });
 
-  it('rejects unallowed price id', async () => {
+  it('rejects forbidden pricing fields sent by client', async () => {
     const supabase = createServerSupabaseClient({
       user: { id: 'user_1', email: 'john@example.com' },
     });
@@ -287,11 +391,161 @@ describe('billing checkout', () => {
     const json = await response.json();
 
     expect(response.status).toBe(400);
-    expect(json).toEqual({ error: 'Invalid price ID' });
+    expect(json.error).toContain('Campo não permitido');
     expect(mocks.getOrCreateCustomer).not.toHaveBeenCalled();
     expect(mocks.checkoutSessionCreate).not.toHaveBeenCalled();
   });
 
+  it('rejects checkout when the same paid plan is already active', async () => {
+    const supabase = createServerSupabaseClient({
+      user: { id: 'user_1', email: 'john@example.com' },
+    });
+    mocks.createServerClient.mockResolvedValue(supabase.client);
+    mocks.getSubscriptionStatus.mockResolvedValue({
+      isPro: true,
+      status: 'active',
+      tier: 'pro',
+      periodEnd: Date.now() + 86_400_000,
+    });
+
+    const { POST } = await import('@/app/api/stripe/create-checkout/route');
+
+    const request = new NextRequest('https://memoriza.app/api/stripe/create-checkout', {
+      method: 'POST',
+      headers: { origin: 'https://memoriza.app', 'content-type': 'application/json' },
+      body: JSON.stringify({ planKey: 'pro_monthly' }),
+    });
+
+    const response = await POST(request);
+    const json = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(json).toEqual({ error: 'Plano já está ativo para este usuário' });
+    expect(mocks.getOrCreateCustomer).not.toHaveBeenCalled();
+    expect(mocks.checkoutSessionCreate).not.toHaveBeenCalled();
+  });
+
+});
+
+describe('billing checkout confirmation fallback', () => {
+  it('confirms checkout by session_id and synchronizes profile/subscription', async () => {
+    const supabase = createServerSupabaseClient({
+      user: { id: 'user_1', email: 'john@example.com' },
+      profile: { stripe_customer_id: 'cus_123' },
+    });
+    mocks.createServerClient.mockResolvedValue(supabase.client);
+    const admin = createAdminSupabaseClient();
+    mocks.adminCreateClient.mockReturnValue(admin.client);
+
+    mocks.checkoutSessionRetrieve.mockResolvedValue({
+      id: 'cs_confirm_123',
+      mode: 'subscription',
+      status: 'complete',
+      payment_status: 'paid',
+      customer: 'cus_123',
+      metadata: { user_id: 'user_1', plan_key: 'pro_monthly' },
+      subscription: {
+        id: 'sub_confirm_123',
+        status: 'active',
+        customer: 'cus_123',
+        cancel_at_period_end: false,
+        current_period_start: 1700000000,
+        current_period_end: 1710000000,
+        items: {
+          data: [{ price: { id: 'price_pro_test' } }],
+        },
+        metadata: { user_id: 'user_1', plan_key: 'pro_monthly' },
+      },
+    });
+
+    const { POST } = await import('@/app/api/stripe/confirm-checkout/route');
+
+    const request = new NextRequest('https://memoriza.app/api/stripe/confirm-checkout', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId: 'cs_confirm_123' }),
+    });
+
+    const response = await POST(request);
+    const json = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(json).toEqual(
+      expect.objectContaining({
+        ok: true,
+        tier: 'pro',
+        status: 'active',
+      })
+    );
+    expect(admin.profilesUpsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'user_1',
+        is_pro: true,
+        subscription_status: 'active',
+        subscription_tier: 'pro',
+        stripe_customer_id: 'cus_123',
+      }),
+      expect.objectContaining({
+        onConflict: 'id',
+      })
+    );
+    expect(admin.subscriptionsUpsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        user_id: 'user_1',
+        stripe_subscription_id: 'sub_confirm_123',
+        stripe_customer_id: 'cus_123',
+        status: 'active',
+      }),
+      expect.objectContaining({
+        onConflict: 'stripe_subscription_id',
+      })
+    );
+  });
+
+  it('rejects checkout confirmation when metadata user does not match authenticated user', async () => {
+    const supabase = createServerSupabaseClient({
+      user: { id: 'user_1', email: 'john@example.com' },
+      profile: { stripe_customer_id: 'cus_123' },
+    });
+    mocks.createServerClient.mockResolvedValue(supabase.client);
+    const admin = createAdminSupabaseClient();
+    mocks.adminCreateClient.mockReturnValue(admin.client);
+
+    mocks.checkoutSessionRetrieve.mockResolvedValue({
+      id: 'cs_forbidden_123',
+      mode: 'subscription',
+      status: 'complete',
+      payment_status: 'paid',
+      customer: 'cus_other',
+      metadata: { user_id: 'user_2', plan_key: 'pro_monthly' },
+      subscription: {
+        id: 'sub_forbidden_123',
+        status: 'active',
+        customer: 'cus_other',
+        cancel_at_period_end: false,
+        items: {
+          data: [{ price: { id: 'price_pro_test' } }],
+        },
+        metadata: { user_id: 'user_2', plan_key: 'pro_monthly' },
+      },
+    });
+
+    const { POST } = await import('@/app/api/stripe/confirm-checkout/route');
+
+    const request = new NextRequest('https://memoriza.app/api/stripe/confirm-checkout', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId: 'cs_forbidden_123' }),
+    });
+
+    const response = await POST(request);
+    const json = await response.json();
+
+    expect(response.status).toBe(403);
+    expect(json.error).toContain('pertence ao usu');
+    expect(admin.profilesUpsert).not.toHaveBeenCalled();
+    expect(admin.subscriptionsUpsert).not.toHaveBeenCalled();
+  });
 });
 
 describe('billing portal', () => {
@@ -346,6 +600,319 @@ describe('billing portal', () => {
   });
 });
 
+describe('cancel subscription', () => {
+  it('allows localhost origin and schedules cancellation at period end', async () => {
+    const supabase = createServerSupabaseClient({
+      user: { id: 'user_1', email: 'john@example.com' },
+      profile: { stripe_customer_id: 'cus_123' },
+    });
+    mocks.createServerClient.mockResolvedValue(supabase.client);
+    mocks.adminCreateClient.mockReturnValue(supabase.client);
+    mocks.subscriptionList.mockResolvedValue({
+      data: [
+        {
+          id: 'sub_123',
+          status: 'active',
+          cancel_at_period_end: false,
+          current_period_start: 1700000000,
+          current_period_end: 1710000000,
+          items: { data: [] },
+        },
+      ],
+    });
+    mocks.subscriptionUpdate.mockResolvedValue({
+      id: 'sub_123',
+      status: 'active',
+      cancel_at_period_end: true,
+      current_period_start: 1700000000,
+      current_period_end: 1710000000,
+      items: { data: [] },
+    });
+
+    const { POST } = await import('@/app/api/stripe/cancel-subscription/route');
+
+    const request = new NextRequest('http://localhost:3000/api/stripe/cancel-subscription', {
+      method: 'POST',
+      headers: { origin: 'http://localhost:3000' },
+    });
+
+    const response = await POST(request);
+    const json = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(json).toEqual(
+      expect.objectContaining({
+        ok: true,
+        alreadyScheduled: false,
+      })
+    );
+    expect(mocks.subscriptionList).toHaveBeenCalledWith({
+      customer: 'cus_123',
+      status: 'all',
+      limit: 10,
+    });
+    expect(mocks.subscriptionUpdate).toHaveBeenCalledWith('sub_123', {
+      cancel_at_period_end: true,
+    });
+  });
+
+  it('falls back to subscriptions table when profile does not expose stripe_customer_id', async () => {
+    const supabase = createServerSupabaseClient({
+      user: { id: 'user_1', email: 'john@example.com' },
+      profile: null,
+      subscription: {
+        user_id: 'user_1',
+        stripe_customer_id: 'cus_from_subscription_row',
+        status: 'active',
+      },
+    });
+    mocks.createServerClient.mockResolvedValue(supabase.client);
+    mocks.adminCreateClient.mockReturnValue(supabase.client);
+    mocks.subscriptionList.mockResolvedValue({
+      data: [
+        {
+          id: 'sub_123',
+          status: 'active',
+          cancel_at_period_end: false,
+          current_period_start: 1700000000,
+          current_period_end: 1710000000,
+          items: { data: [] },
+        },
+      ],
+    });
+    mocks.subscriptionUpdate.mockResolvedValue({
+      id: 'sub_123',
+      status: 'active',
+      cancel_at_period_end: true,
+      current_period_start: 1700000000,
+      current_period_end: 1710000000,
+      items: { data: [] },
+    });
+
+    const { POST } = await import('@/app/api/stripe/cancel-subscription/route');
+
+    const request = new NextRequest('http://localhost:3000/api/stripe/cancel-subscription', {
+      method: 'POST',
+      headers: { origin: 'http://localhost:3000' },
+    });
+
+    const response = await POST(request);
+    const json = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(json).toEqual(
+      expect.objectContaining({
+        ok: true,
+        alreadyScheduled: false,
+      })
+    );
+    expect(mocks.subscriptionList).toHaveBeenCalledWith({
+      customer: 'cus_from_subscription_row',
+      status: 'all',
+      limit: 10,
+    });
+  });
+
+  it('returns 403 for invalid origin', async () => {
+    const supabase = createServerSupabaseClient({
+      user: { id: 'user_1', email: 'john@example.com' },
+      profile: { stripe_customer_id: 'cus_123' },
+    });
+    mocks.createServerClient.mockResolvedValue(supabase.client);
+
+    const { POST } = await import('@/app/api/stripe/cancel-subscription/route');
+
+    const request = new NextRequest('http://localhost:3000/api/stripe/cancel-subscription', {
+      method: 'POST',
+      headers: { origin: 'https://evil.example' },
+    });
+
+    const response = await POST(request);
+    const json = await response.json();
+
+    expect(response.status).toBe(403);
+    expect(json).toEqual({ error: 'Origem nao autorizada' });
+    expect(mocks.subscriptionList).not.toHaveBeenCalled();
+    expect(mocks.subscriptionUpdate).not.toHaveBeenCalled();
+  });
+});
+
+describe('refund subscription', () => {
+  it('refunds the latest paid invoice within 7 days and cancels immediately', async () => {
+    const supabase = createServerSupabaseClient({
+      user: { id: 'user_refund', email: 'refund@example.com' },
+      profile: { stripe_customer_id: 'cus_refund_123' },
+    });
+    const admin = createAdminSupabaseClient({
+      existingProfile: {
+        id: 'user_refund',
+        is_pro: true,
+        subscription_status: 'active',
+        subscription_tier: 'pro',
+        subscription_period_end: 1710000000000,
+        stripe_customer_id: 'cus_refund_123',
+      },
+      existingSubscription: {
+        user_id: 'user_refund',
+        stripe_subscription_id: 'sub_refund_123',
+        stripe_customer_id: 'cus_refund_123',
+        price_id: 'price_pro_test',
+        status: 'active',
+        current_period_start: 1700000000000,
+        current_period_end: 1710000000000,
+        cancel_at_period_end: false,
+      },
+    });
+
+    mocks.createServerClient.mockResolvedValue(supabase.client);
+    mocks.adminCreateClient.mockReturnValue(admin.client);
+    mocks.subscriptionList.mockResolvedValue({
+      data: [
+        {
+          id: 'sub_refund_123',
+          status: 'active',
+          cancel_at_period_end: false,
+          current_period_start: Math.floor((Date.now() - (2 * 24 * 60 * 60 * 1000)) / 1000),
+          current_period_end: Math.floor((Date.now() + (28 * 24 * 60 * 60 * 1000)) / 1000),
+          items: { data: [{ price: { id: 'price_pro_test' } }] },
+        },
+      ],
+    });
+    mocks.invoiceList.mockResolvedValue({
+      data: [
+        {
+          id: 'in_refund_123',
+          status: 'paid',
+          amount_paid: 9900,
+          created: Math.floor((Date.now() - (2 * 24 * 60 * 60 * 1000)) / 1000),
+          payment_intent: 'pi_refund_123',
+        },
+      ],
+    });
+    mocks.refundCreate.mockResolvedValue({
+      id: 're_refund_123',
+      amount: 9900,
+      currency: 'brl',
+      created: Math.floor(Date.now() / 1000),
+    });
+
+    const { POST } = await import('@/app/api/stripe/refund-subscription/route');
+
+    const request = new NextRequest('https://memoriza.app/api/stripe/refund-subscription', {
+      method: 'POST',
+      headers: { origin: 'https://memoriza.app' },
+    });
+
+    const response = await POST(request);
+    const json = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(json).toEqual(
+      expect.objectContaining({
+        ok: true,
+        refundId: 're_refund_123',
+        amountRefunded: 9900,
+        currency: 'brl',
+      })
+    );
+    expect(mocks.invoiceList).toHaveBeenCalledWith({
+      customer: 'cus_refund_123',
+      subscription: 'sub_refund_123',
+      limit: 10,
+    });
+    expect(mocks.refundCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payment_intent: 'pi_refund_123',
+        amount: 9900,
+        reason: 'requested_by_customer',
+        metadata: expect.objectContaining({
+          user_id: 'user_refund',
+          invoice_id: 'in_refund_123',
+          source: 'self_service_refund',
+        }),
+      }),
+      expect.objectContaining({
+        idempotencyKey: 'refund:user_refund:in_refund_123',
+      })
+    );
+    expect(mocks.subscriptionCancel).toHaveBeenCalledWith('sub_refund_123');
+    expect(admin.profileState?.subscription_status).toBe('canceled');
+    expect(admin.profileState?.subscription_tier).toBe('free');
+    expect(admin.profileState?.is_pro).toBe(false);
+    expect(admin.subscriptionState?.status).toBe('canceled');
+    expect(admin.subscriptionState?.cancel_at_period_end).toBe(false);
+  });
+
+  it('rejects automatic refund when the 7-day window has expired', async () => {
+    const supabase = createServerSupabaseClient({
+      user: { id: 'user_refund_late', email: 'late@example.com' },
+      profile: { stripe_customer_id: 'cus_refund_late' },
+    });
+    const admin = createAdminSupabaseClient({
+      existingProfile: {
+        id: 'user_refund_late',
+        is_pro: true,
+        subscription_status: 'active',
+        subscription_tier: 'pro',
+        subscription_period_end: 1710000000000,
+        stripe_customer_id: 'cus_refund_late',
+      },
+      existingSubscription: {
+        user_id: 'user_refund_late',
+        stripe_subscription_id: 'sub_refund_late',
+        stripe_customer_id: 'cus_refund_late',
+        price_id: 'price_pro_test',
+        status: 'active',
+        current_period_start: 1700000000000,
+        current_period_end: 1710000000000,
+        cancel_at_period_end: false,
+      },
+    });
+
+    mocks.createServerClient.mockResolvedValue(supabase.client);
+    mocks.adminCreateClient.mockReturnValue(admin.client);
+    mocks.subscriptionList.mockResolvedValue({
+      data: [
+        {
+          id: 'sub_refund_late',
+          status: 'active',
+          cancel_at_period_end: false,
+          current_period_start: Math.floor((Date.now() - (10 * 24 * 60 * 60 * 1000)) / 1000),
+          current_period_end: Math.floor((Date.now() + (20 * 24 * 60 * 60 * 1000)) / 1000),
+          items: { data: [{ price: { id: 'price_pro_test' } }] },
+        },
+      ],
+    });
+    mocks.invoiceList.mockResolvedValue({
+      data: [
+        {
+          id: 'in_refund_late',
+          status: 'paid',
+          amount_paid: 9900,
+          created: Math.floor((Date.now() - (10 * 24 * 60 * 60 * 1000)) / 1000),
+          payment_intent: 'pi_refund_late',
+        },
+      ],
+    });
+
+    const { POST } = await import('@/app/api/stripe/refund-subscription/route');
+
+    const request = new NextRequest('https://memoriza.app/api/stripe/refund-subscription', {
+      method: 'POST',
+      headers: { origin: 'https://memoriza.app' },
+    });
+
+    const response = await POST(request);
+    const json = await response.json();
+
+    expect(response.status).toBe(403);
+    expect(json.error).toContain('7 dias');
+    expect(mocks.refundCreate).not.toHaveBeenCalled();
+    expect(mocks.subscriptionCancel).not.toHaveBeenCalled();
+    expect(admin.profilesUpdate).not.toHaveBeenCalled();
+  });
+});
+
 describe('billing webhook', () => {
   it('processes checkout.session.completed and upgrades user', async () => {
     const admin = createAdminSupabaseClient();
@@ -389,7 +956,7 @@ describe('billing webhook', () => {
     const json = await response.json();
 
     expect(response.status).toBe(200);
-    expect(json).toEqual({ received: true });
+    expect(json).toEqual({ received: true, outcome: 'applied' });
     expect(mocks.webhookConstructEvent).toHaveBeenCalledWith(
       rawBody,
       signature,
@@ -412,8 +979,10 @@ describe('billing webhook', () => {
         onConflict: 'stripe_subscription_id',
       })
     );
-    expect(mocks.markEventProcessed).toHaveBeenCalledWith(
+    expect(mocks.finalizeEvent).toHaveBeenCalledWith(
       'evt_checkout_completed',
+      'applied',
+      expect.any(String),
       expect.any(Number)
     );
   });
@@ -459,7 +1028,7 @@ describe('billing webhook', () => {
     const json = await response.json();
 
     expect(response.status).toBe(200);
-    expect(json).toEqual({ received: true });
+    expect(json).toEqual({ received: true, outcome: 'applied' });
     expect(admin.subscriptionsUpsert).toHaveBeenCalledWith(
       expect.objectContaining({
         user_id: 'user_from_subscription_metadata',
@@ -504,7 +1073,7 @@ describe('billing webhook', () => {
     const json = await response.json();
 
     expect(response.status).toBe(200);
-    expect(json).toEqual({ received: true });
+    expect(json).toEqual({ received: true, outcome: 'applied' });
     expect(admin.profilesUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
         is_pro: false,
@@ -521,8 +1090,10 @@ describe('billing webhook', () => {
         onConflict: 'stripe_subscription_id',
       })
     );
-    expect(mocks.markEventProcessed).toHaveBeenCalledWith(
+    expect(mocks.finalizeEvent).toHaveBeenCalledWith(
       'evt_subscription_deleted',
+      'applied',
+      expect.any(String),
       expect.any(Number)
     );
   });
@@ -552,7 +1123,7 @@ describe('billing webhook', () => {
     expect(json.error).toContain('Signature verification failed');
     expect(mocks.recordFailedAttempt).toHaveBeenCalledWith('3.18.12.63');
     expect(mocks.checkEventIdempotencyAtomic).not.toHaveBeenCalled();
-    expect(mocks.markEventProcessed).not.toHaveBeenCalled();
+    expect(mocks.finalizeEvent).not.toHaveBeenCalled();
   });
 
   it('returns duplicate ack and skips processing when event is not new', async () => {
@@ -590,7 +1161,7 @@ describe('billing webhook', () => {
     expect(json).toEqual({ received: true, duplicate: true });
     expect(admin.profilesUpdate).not.toHaveBeenCalled();
     expect(admin.subscriptionsUpdate).not.toHaveBeenCalled();
-    expect(mocks.markEventProcessed).not.toHaveBeenCalled();
+    expect(mocks.finalizeEvent).not.toHaveBeenCalled();
   });
 
   it('syncs plan and period for existing subscriber on customer.subscription.updated', async () => {
@@ -639,7 +1210,7 @@ describe('billing webhook', () => {
     const json = await response.json();
 
     expect(response.status).toBe(200);
-    expect(json).toEqual({ received: true });
+    expect(json).toEqual({ received: true, outcome: 'applied' });
     expect(admin.profilesUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
         is_pro: true,
@@ -663,8 +1234,10 @@ describe('billing webhook', () => {
     );
     expect(admin.subscriptionState?.price_id).toBe('price_pro_test');
     expect(admin.subscriptionState?.current_period_end).toBe(1712592000000);
-    expect(mocks.markEventProcessed).toHaveBeenCalledWith(
+    expect(mocks.finalizeEvent).toHaveBeenCalledWith(
       'evt_subscription_renewed',
+      'applied',
+      expect.any(String),
       expect.any(Number)
     );
   });
@@ -717,7 +1290,7 @@ describe('billing webhook', () => {
     const json = await response.json();
 
     expect(response.status).toBe(200);
-    expect(json).toEqual({ received: true });
+    expect(json).toEqual({ received: true, outcome: 'applied' });
     expect(admin.profilesUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
         subscription_period_end: 1722592000000,
@@ -786,7 +1359,7 @@ describe('billing webhook', () => {
     const json = await response.json();
 
     expect(response.status).toBe(200);
-    expect(json).toEqual({ received: true });
+    expect(json).toEqual({ received: true, outcome: 'applied' });
     expect(admin.profilesUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
         is_pro: true,
@@ -810,8 +1383,10 @@ describe('billing webhook', () => {
     expect(admin.subscriptionState?.status).toBe('active');
     expect(admin.subscriptionState?.price_id).toBe('price_pro_test');
     expect(admin.subscriptionState?.current_period_end).toBe(1732592000000);
-    expect(mocks.markEventProcessed).toHaveBeenCalledWith(
+    expect(mocks.finalizeEvent).toHaveBeenCalledWith(
       'evt_invoice_paid_123',
+      'applied',
+      expect.any(String),
       expect.any(Number)
     );
   });
@@ -867,7 +1442,7 @@ describe('billing webhook', () => {
     const json = await response.json();
 
     expect(response.status).toBe(200);
-    expect(json).toEqual({ received: true });
+    expect(json).toEqual({ received: true, outcome: 'applied' });
     expect(admin.subscriptionsUpsert).toHaveBeenCalledWith(
       expect.objectContaining({
         user_id: 'user_from_subscription_row',
@@ -944,7 +1519,7 @@ describe('billing webhook', () => {
     const json = await response.json();
 
     expect(response.status).toBe(200);
-    expect(json).toEqual({ received: true });
+    expect(json).toEqual({ received: true, outcome: 'applied' });
     expect(admin.profilesUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
         subscription_tier: 'pro',
@@ -1004,11 +1579,13 @@ describe('billing webhook', () => {
     const json = await response.json();
 
     expect(response.status).toBe(200);
-    expect(json).toEqual({ received: true });
+    expect(json).toEqual({ received: true, outcome: 'ignored' });
     expect(admin.profilesUpdate).not.toHaveBeenCalled();
     expect(admin.subscriptionsUpdate).not.toHaveBeenCalled();
-    expect(mocks.markEventProcessed).toHaveBeenCalledWith(
+    expect(mocks.finalizeEvent).toHaveBeenCalledWith(
       'evt_invoice_paid_no_sub',
+      'ignored',
+      expect.any(String),
       expect.any(Number)
     );
   });
@@ -1066,7 +1643,7 @@ describe('billing webhook', () => {
     expect(json).toEqual({ received: true, duplicate: true });
     expect(admin.profilesUpdate).not.toHaveBeenCalled();
     expect(admin.subscriptionsUpdate).not.toHaveBeenCalled();
-    expect(mocks.markEventProcessed).not.toHaveBeenCalled();
+    expect(mocks.finalizeEvent).not.toHaveBeenCalled();
   });
 
   it('processes invoice.payment_failed and marks profile as past_due', async () => {
@@ -1109,7 +1686,7 @@ describe('billing webhook', () => {
     const json = await response.json();
 
     expect(response.status).toBe(200);
-    expect(json).toEqual({ received: true });
+    expect(json).toEqual({ received: true, outcome: 'applied' });
     expect(admin.profilesUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
         subscription_status: 'past_due',
@@ -1125,8 +1702,10 @@ describe('billing webhook', () => {
       })
     );
     expect(admin.subscriptionState?.status).toBe('past_due');
-    expect(mocks.markEventProcessed).toHaveBeenCalledWith(
+    expect(mocks.finalizeEvent).toHaveBeenCalledWith(
       'evt_invoice_failed_123',
+      'applied',
+      expect.any(String),
       expect.any(Number)
     );
   });
@@ -1217,7 +1796,7 @@ describe('billing webhook', () => {
     const checkoutRequest = new NextRequest('https://memoriza.app/api/stripe/create-checkout', {
       method: 'POST',
       headers: { origin: 'https://memoriza.app', 'content-type': 'application/json' },
-      body: JSON.stringify({ priceId: 'price_pro_test' }),
+      body: JSON.stringify({ planKey: 'pro_monthly' }),
     });
 
     const checkoutResponse = await checkoutPOST(checkoutRequest);
@@ -1361,5 +1940,337 @@ describe('billing webhook', () => {
     expect(admin.subscriptionState?.status).toBe('active');
     expect(admin.subscriptionState?.current_period_start).toBe(1740000000000);
     expect(admin.subscriptionState?.current_period_end).toBe(1742592000000);
+  });
+
+  // ================================================================
+  // REGRESSION: permanent_failure outcomes
+  // ================================================================
+
+  it('returns permanent_failure when checkout.session.completed has no user_id', async () => {
+    const admin = createAdminSupabaseClient();
+    mocks.adminCreateClient.mockReturnValue(admin.client);
+    mocks.webhookConstructEvent.mockReturnValue({
+      id: 'evt_checkout_no_user',
+      type: 'checkout.session.completed',
+      data: {
+        object: {
+          mode: 'subscription',
+          subscription: 'sub_orphan_123',
+          customer: 'cus_orphan_123',
+          metadata: {},  // no user_id
+        },
+      },
+    });
+    mocks.subscriptionRetrieve.mockResolvedValue({
+      id: 'sub_orphan_123',
+      metadata: {},  // no user_id here either
+      current_period_start: 1700000000,
+      current_period_end: 1710000000,
+      cancel_at_period_end: false,
+      items: {
+        data: [{ price: { id: 'price_pro_test' } }],
+      },
+    });
+
+    const { POST } = await import('@/app/api/stripe/webhook/route');
+
+    const request = new NextRequest('https://memoriza.app/api/stripe/webhook', {
+      method: 'POST',
+      headers: {
+        'stripe-signature': `t=${Math.floor(Date.now() / 1000)},v1=test`,
+        'x-vercel-forwarded-for': '3.18.12.63',
+      },
+      body: JSON.stringify({ event: 'checkout-no-user' }),
+    });
+
+    const response = await POST(request);
+    const json = await response.json();
+
+    // permanent_failure returns 200 to stop Stripe retries
+    expect(response.status).toBe(200);
+    expect(json.outcome).toBe('permanent_failure');
+    expect(json.reason).toContain('user_id');
+    // profile must NOT be updated
+    expect(admin.profilesUpdate).not.toHaveBeenCalled();
+    expect(admin.subscriptionsUpsert).not.toHaveBeenCalled();
+    expect(mocks.finalizeEvent).toHaveBeenCalledWith(
+      'evt_checkout_no_user',
+      'permanent_failure',
+      expect.any(String),
+      expect.any(Number)
+    );
+  });
+
+  it('returns permanent_failure when subscription.updated identity is unresolvable', async () => {
+    // No profileLookupByCustomer → identity resolution returns null
+    const admin = createAdminSupabaseClient();
+    mocks.adminCreateClient.mockReturnValue(admin.client);
+    mocks.webhookConstructEvent.mockReturnValue({
+      id: 'evt_sub_updated_no_identity',
+      type: 'customer.subscription.updated',
+      data: {
+        object: {
+          id: 'sub_ghost_123',
+          customer: 'cus_ghost_123',
+          status: 'active',
+          cancel_at_period_end: false,
+          current_period_start: 1710000000,
+          current_period_end: 1712592000,
+          items: {
+            data: [{ price: { id: 'price_pro_test' } }],
+          },
+        },
+      },
+    });
+    // Stripe fallback also returns no user metadata
+    mocks.subscriptionRetrieve.mockResolvedValue({
+      id: 'sub_ghost_123',
+      customer: 'cus_ghost_123',
+      metadata: {},
+    });
+
+    const { POST } = await import('@/app/api/stripe/webhook/route');
+
+    const request = new NextRequest('https://memoriza.app/api/stripe/webhook', {
+      method: 'POST',
+      headers: {
+        'stripe-signature': `t=${Math.floor(Date.now() / 1000)},v1=test`,
+        'x-vercel-forwarded-for': '3.18.12.63',
+      },
+      body: JSON.stringify({ event: 'sub-updated-no-identity' }),
+    });
+
+    const response = await POST(request);
+    const json = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(json.outcome).toBe('permanent_failure');
+    expect(json.reason).toContain('identity');
+    expect(admin.profilesUpdate).not.toHaveBeenCalled();
+    expect(mocks.finalizeEvent).toHaveBeenCalledWith(
+      'evt_sub_updated_no_identity',
+      'permanent_failure',
+      expect.any(String),
+      expect.any(Number)
+    );
+  });
+
+  it('returns permanent_failure when subscription.deleted identity is unresolvable', async () => {
+    const admin = createAdminSupabaseClient();
+    mocks.adminCreateClient.mockReturnValue(admin.client);
+    mocks.webhookConstructEvent.mockReturnValue({
+      id: 'evt_sub_deleted_no_identity',
+      type: 'customer.subscription.deleted',
+      data: {
+        object: {
+          id: 'sub_vanished_123',
+          customer: 'cus_vanished_123',
+        },
+      },
+    });
+    mocks.subscriptionRetrieve.mockResolvedValue({
+      id: 'sub_vanished_123',
+      customer: 'cus_vanished_123',
+      metadata: {},
+    });
+
+    const { POST } = await import('@/app/api/stripe/webhook/route');
+
+    const request = new NextRequest('https://memoriza.app/api/stripe/webhook', {
+      method: 'POST',
+      headers: {
+        'stripe-signature': `t=${Math.floor(Date.now() / 1000)},v1=test`,
+        'x-vercel-forwarded-for': '3.18.12.63',
+      },
+      body: JSON.stringify({ event: 'sub-deleted-no-identity' }),
+    });
+
+    const response = await POST(request);
+    const json = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(json.outcome).toBe('permanent_failure');
+    expect(admin.profilesUpdate).not.toHaveBeenCalled();
+    expect(admin.subscriptionsUpsert).not.toHaveBeenCalled();
+    expect(mocks.finalizeEvent).toHaveBeenCalledWith(
+      'evt_sub_deleted_no_identity',
+      'permanent_failure',
+      expect.any(String),
+      expect.any(Number)
+    );
+  });
+
+  it('returns permanent_failure when invoice.paid identity is unresolvable', async () => {
+    const admin = createAdminSupabaseClient();
+    mocks.adminCreateClient.mockReturnValue(admin.client);
+    mocks.webhookConstructEvent.mockReturnValue({
+      id: 'evt_invoice_paid_no_identity',
+      type: 'invoice.paid',
+      data: {
+        object: {
+          id: 'in_orphan_123',
+          customer: 'cus_nobody_123',
+          parent: {
+            subscription_details: {
+              subscription: 'sub_nobody_123',
+            },
+          },
+          lines: {
+            data: [{
+              price: { id: 'price_pro_test' },
+              period: { start: 1730000000, end: 1732592000 },
+            }],
+          },
+        },
+      },
+    });
+    mocks.subscriptionRetrieve.mockResolvedValue({
+      id: 'sub_nobody_123',
+      customer: 'cus_nobody_123',
+      metadata: {},
+    });
+
+    const { POST } = await import('@/app/api/stripe/webhook/route');
+
+    const request = new NextRequest('https://memoriza.app/api/stripe/webhook', {
+      method: 'POST',
+      headers: {
+        'stripe-signature': `t=${Math.floor(Date.now() / 1000)},v1=test`,
+        'x-vercel-forwarded-for': '3.18.12.63',
+      },
+      body: JSON.stringify({ event: 'invoice-paid-no-identity' }),
+    });
+
+    const response = await POST(request);
+    const json = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(json.outcome).toBe('permanent_failure');
+    expect(admin.profilesUpdate).not.toHaveBeenCalled();
+    expect(mocks.finalizeEvent).toHaveBeenCalledWith(
+      'evt_invoice_paid_no_identity',
+      'permanent_failure',
+      expect.any(String),
+      expect.any(Number)
+    );
+  });
+
+  // ================================================================
+  // REGRESSION: transient_failure outcomes
+  // ================================================================
+
+  it('returns 500 (transient_failure) when profile update fails on checkout.session.completed', async () => {
+    const admin = createAdminSupabaseClient();
+    mocks.adminCreateClient.mockReturnValue(admin.client);
+    // Override profilesUpdate to return a DB error
+    admin.profilesUpdate.mockReturnValue({
+      eq: vi.fn().mockResolvedValue({
+        error: { message: 'connection timeout', code: '57P01' },
+      }),
+    });
+
+    mocks.webhookConstructEvent.mockReturnValue({
+      id: 'evt_checkout_db_fail',
+      type: 'checkout.session.completed',
+      data: {
+        object: {
+          mode: 'subscription',
+          subscription: 'sub_dbfail_123',
+          customer: 'cus_dbfail_123',
+          metadata: { user_id: 'user_dbfail' },
+        },
+      },
+    });
+    mocks.subscriptionRetrieve.mockResolvedValue({
+      id: 'sub_dbfail_123',
+      current_period_start: 1700000000,
+      current_period_end: 1710000000,
+      cancel_at_period_end: false,
+      items: {
+        data: [{ price: { id: 'price_pro_test' } }],
+      },
+    });
+
+    const { POST } = await import('@/app/api/stripe/webhook/route');
+
+    const request = new NextRequest('https://memoriza.app/api/stripe/webhook', {
+      method: 'POST',
+      headers: {
+        'stripe-signature': `t=${Math.floor(Date.now() / 1000)},v1=test`,
+        'x-vercel-forwarded-for': '3.18.12.63',
+      },
+      body: JSON.stringify({ event: 'checkout-db-fail' }),
+    });
+
+    const response = await POST(request);
+    const json = await response.json();
+
+    // transient_failure returns 500 so Stripe retries
+    expect(response.status).toBe(500);
+    expect(json.outcome).toBe('transient_failure');
+    expect(json.reason).toContain('Profile update failed');
+    // subscription upsert must NOT have been called (profile update failed first)
+    expect(admin.subscriptionsUpsert).not.toHaveBeenCalled();
+    expect(mocks.finalizeEvent).toHaveBeenCalledWith(
+      'evt_checkout_db_fail',
+      'transient_failure',
+      expect.any(String),
+      expect.any(Number)
+    );
+  });
+
+  it('returns 500 (transient_failure) when subscription upsert fails on customer.subscription.updated', async () => {
+    const admin = createAdminSupabaseClient({
+      profileLookupByCustomer: { id: 'user_sub_upsert_fail' },
+    });
+    mocks.adminCreateClient.mockReturnValue(admin.client);
+    // Override subscriptionsUpsert to return a DB error
+    admin.subscriptionsUpsert.mockResolvedValue({
+      error: { message: 'deadlock detected', code: '40P01' },
+    });
+
+    mocks.webhookConstructEvent.mockReturnValue({
+      id: 'evt_sub_updated_db_fail',
+      type: 'customer.subscription.updated',
+      data: {
+        object: {
+          id: 'sub_upsert_fail_123',
+          customer: 'cus_upsert_fail_123',
+          status: 'active',
+          cancel_at_period_end: false,
+          current_period_start: 1710000000,
+          current_period_end: 1712592000,
+          items: {
+            data: [{ price: { id: 'price_pro_test' } }],
+          },
+        },
+      },
+    });
+
+    const { POST } = await import('@/app/api/stripe/webhook/route');
+
+    const request = new NextRequest('https://memoriza.app/api/stripe/webhook', {
+      method: 'POST',
+      headers: {
+        'stripe-signature': `t=${Math.floor(Date.now() / 1000)},v1=test`,
+        'x-vercel-forwarded-for': '3.18.12.63',
+      },
+      body: JSON.stringify({ event: 'sub-updated-db-fail' }),
+    });
+
+    const response = await POST(request);
+    const json = await response.json();
+
+    expect(response.status).toBe(500);
+    expect(json.outcome).toBe('transient_failure');
+    expect(json.reason).toContain('Subscription upsert failed');
+    // profile WAS updated (it succeeded), but sub failed
+    expect(admin.profilesUpdate).toHaveBeenCalled();
+    expect(mocks.finalizeEvent).toHaveBeenCalledWith(
+      'evt_sub_updated_db_fail',
+      'transient_failure',
+      expect.any(String),
+      expect.any(Number)
+    );
   });
 });

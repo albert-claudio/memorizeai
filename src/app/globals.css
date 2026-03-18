@@ -234,6 +234,17 @@ body {
   animation: pulse-glow 2s ease-in-out infinite;
 }
 
+/* Skeleton Loading */
+@keyframes skeleton-shimmer {
+  0% { opacity: 0.06; }
+  50% { opacity: 0.12; }
+  100% { opacity: 0.06; }
+}
+
+.skeleton {
+  animation: skeleton-shimmer 1.8s ease-in-out infinite;
+}
+
 /* Mobile Optimizations - Professional Typography */
 @media (max-width: 640px) {
   /* ====== BUTTONS ====== */

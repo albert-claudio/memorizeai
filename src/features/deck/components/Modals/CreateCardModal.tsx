@@ -24,7 +24,7 @@ export function CreateCardModal({ isOpen, onClose, onSubmit, tierLimitReached, m
     if (!front.trim() || !back.trim()) return;
 
     if (tierLimitReached) {
-      setError(`Limite de ${maxCards} cards por deck atingido. Faça upgrade para Pro para cards ilimitados.`);
+      setError(`Limite de ${maxCards} cards por deck atingido. Faça upgrade para Pro para até 10.000 cards por deck.`);
       return;
     }
 

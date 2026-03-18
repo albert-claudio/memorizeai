@@ -16,7 +16,7 @@ import { studyService } from '../services/studyService';
 import { analyzeStruggleCard, applyStruggleSuggestions } from '@/app/actions/analyzeStruggleCard';
 import { atomizeLeechCard, applyAtomization } from '@/app/actions/atomizeLeechCard';
 
-export function useStudySession(deckId: string, userId: string | undefined) {
+export function useStudySession(deckId: string, userId: string | undefined, isPro: boolean = false) {
   const router = useRouter();
   
   // Data State
@@ -133,6 +133,7 @@ export function useStudySession(deckId: string, userId: string | undefined) {
         stability: currentCard.stability,
         ease_factor: currentCard.ease_factor,
         lapses: currentCard.lapses,
+        relearning_step: currentCard.relearning_step,
         step: currentCard.step,
       }, fsrsConfig);
       setIntervalPreviews(previews);
@@ -221,14 +222,14 @@ export function useStudySession(deckId: string, userId: string | undefined) {
       console.error('Failed to log review:', err);
     }
     
-    // AI Interventions
-    if (result.becameStruggle) {
+    // AI Interventions (Pro only)
+    if (isPro && result.becameStruggle) {
        handleStruggle(currentCard, result.newState.lapses);
        isTransitioning.current = false;
        return;
     }
     
-    if (result.becameLeech) {
+    if (isPro && result.becameLeech) {
       handleLeech(currentCard);
       isTransitioning.current = false;
       return;

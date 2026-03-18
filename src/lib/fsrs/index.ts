@@ -236,8 +236,8 @@ export function calculateStabilityIncrease(
     sInc = 1 + (sInc - 1) * w16;
   }
   
-  // Ensure minimum SInc of 1.1 for visible progress
-  return Math.max(1.1, sInc);
+  // Successful recall should never reduce stability, but can yield only a tiny gain.
+  return Math.max(1.0, sInc);
 }
 
 
@@ -503,15 +503,16 @@ function processRelearningReview(
   const nextStep = currentStep + 1;
 
   if (nextStep >= RELEARNING_STEPS.length) {
-    // Completed relearning: graduate with initial Good stability
-    const newStability = weights.w2; // Good initial stability
-    const intervalDays = calculateIntervalForRetention(newStability, desiredRetention);
+    // Completed relearning: keep the post-lapse stability instead of resetting
+    // the card to "new Good". This preserves the forgetting event in the schedule.
+    const stabilizedState = Math.max(weights.w0, state.stability);
+    const intervalDays = calculateIntervalForRetention(stabilizedState, desiredRetention);
     const nextReviewAt = now + intervalDays * 24 * 60 * 60 * 1000;
 
     return {
       newState: {
         ...state,
-        stability: newStability,
+        stability: stabilizedState,
         relearning_step: null, // Exit relearning
         next_review_at: nextReviewAt,
         last_review_at: now,

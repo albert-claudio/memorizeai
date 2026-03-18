@@ -69,6 +69,83 @@ function chunkText(text: string, chunkSize = 1000, overlap = 100): Array<{ conte
   return chunks;
 }
 
+// Semantic chunking: group consecutive slides with the same title prefix
+interface SlideInput {
+  slideNumber: number;
+  title: string;
+  body: string;
+}
+
+function chunkBySlides(
+  slides: SlideInput[],
+  maxChunkSize = 2000,
+): Array<{ content: string; charStart: number; charEnd: number; topic?: string }> {
+  if (slides.length === 0) return [];
+
+  const chunks: Array<{ content: string; charStart: number; charEnd: number; topic?: string }> = [];
+  let charOffset = 0;
+
+  let currentGroup: SlideInput[] = [slides[0]];
+  let currentTitle = slides[0].title;
+
+  /**
+   * Flush accumulated slides into one or more chunks.
+   */
+  function flush() {
+    if (currentGroup.length === 0) return;
+
+    // Build combined text: "[Topic] Title\n\nbody1\n\nbody2..."
+    const topic = currentTitle;
+    let combined = `[${topic}]\n`;
+    for (const slide of currentGroup) {
+      const slideText = [slide.title, slide.body].filter(Boolean).join('\n');
+      combined += `\n${slideText}\n`;
+    }
+    combined = combined.trim();
+
+    // If combined exceeds max, split into sub-chunks
+    if (combined.length <= maxChunkSize) {
+      const charStart = charOffset;
+      charOffset += combined.length;
+      chunks.push({ content: combined, charStart, charEnd: charOffset, topic });
+    } else {
+      // Simple split at paragraph boundaries
+      const subChunks = chunkText(combined, maxChunkSize, 50);
+      for (const sub of subChunks) {
+        chunks.push({
+          content: sub.content,
+          charStart: charOffset + sub.charStart,
+          charEnd: charOffset + sub.charEnd,
+          topic,
+        });
+      }
+      charOffset += combined.length;
+    }
+
+    currentGroup = [];
+  }
+
+  // Group consecutive slides with similar titles
+  for (let i = 1; i < slides.length; i++) {
+    const slide = slides[i];
+    const titlePrefix = slide.title.split(/[:\-–—]/)[0].trim().toLowerCase();
+    const currentPrefix = currentTitle.split(/[:\-–—]/)[0].trim().toLowerCase();
+
+    if (titlePrefix === currentPrefix && titlePrefix.length > 2) {
+      // Same topic group
+      currentGroup.push(slide);
+    } else {
+      // New topic — flush current group
+      flush();
+      currentGroup = [slide];
+      currentTitle = slide.title;
+    }
+  }
+
+  flush();
+  return chunks;
+}
+
 /**
  * LOCAL Processing API - processes sources without Edge Function
  * POST /api/process-source
@@ -90,7 +167,7 @@ export async function POST(request: NextRequest) {
       return authCheck; // Returns 401 error response
     }
 
-    const { sourceId, extractedText } = await request.json();
+    const { sourceId, extractedText, slides } = await request.json();
     
     if (!sourceId || !extractedText) {
       return NextResponse.json(
@@ -127,7 +204,19 @@ export async function POST(request: NextRequest) {
     try {
       // Normalize and chunk the text
       const normalizedText = normalizeText(extractedText);
-      const chunks = chunkText(normalizedText, 1000, 100);
+
+      // Use semantic chunking for PPTX slides, fixed chunking for others
+      let chunks: Array<{ content: string; charStart: number; charEnd: number; topic?: string }>;
+      if (Array.isArray(slides) && slides.length > 0) {
+        console.log(`[process-source] Using semantic chunking for ${slides.length} slides`);
+        chunks = chunkBySlides(slides, 2000);
+        // Fallback if slide chunking produced nothing
+        if (chunks.length === 0) {
+          chunks = chunkText(normalizedText, 1000, 100);
+        }
+      } else {
+        chunks = chunkText(normalizedText, 1000, 100);
+      }
       
       console.log(`[process-source] Created ${chunks.length} chunks from ${normalizedText.length} chars`);
       

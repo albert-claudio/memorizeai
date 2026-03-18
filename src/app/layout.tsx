@@ -1,12 +1,5 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
 import "./globals.css";
-
-const inter = Inter({
-  subsets: ["latin"],
-  variable: "--font-geist-sans",
-  display: "swap",
-});
 
 export const metadata: Metadata = {
   title: "Vimens - Flashcards Inteligentes para Concurseiros",
@@ -28,7 +21,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="pt-BR">
-      <body className={`${inter.variable} antialiased`}>
+      <body style={{ fontFamily: 'system-ui, -apple-system, sans-serif' }} className="antialiased">
         <div className="noise-overlay" aria-hidden="true" />
         {children}
       </body>

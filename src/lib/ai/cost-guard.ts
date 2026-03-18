@@ -143,3 +143,115 @@ export async function recordAIFailure(model: string): Promise<void> {
     console.warn(`[CostGuard] Circuit breaker OPENED for ${model} after ${failures} failures`);
   }
 }
+
+// ── 3. Weekly token budget ────────────────────────────────────────────────────
+
+export const WEEKLY_TOKEN_LIMITS = {
+  free: 50_000,
+  pro:  500_000,
+} as const;
+
+/** At this fraction of the limit, Pro users get downgraded to Groq */
+const TOKEN_DEGRADE_THRESHOLD = 0.8;
+
+/** Expected max tokens for a single run — anything above is anomalous */
+const ANOMALY_THRESHOLD_TOKENS = 20_000;
+
+export interface TokenBudgetResult {
+  allowed: boolean;
+  reason?: string;
+  shouldDegradeModel: boolean;
+  tokensUsed: number;
+  tokenLimit: number;
+}
+
+/**
+ * Get the start of the current ISO week (Monday 00:00 UTC) as epoch ms.
+ */
+function getWeekStartMs(): number {
+  const now = new Date();
+  const day = now.getUTCDay(); // 0=Sun … 6=Sat
+  const diff = day === 0 ? 6 : day - 1; // days since Monday
+  const monday = new Date(now);
+  monday.setUTCDate(now.getUTCDate() - diff);
+  monday.setUTCHours(0, 0, 0, 0);
+  return monday.getTime();
+}
+
+/**
+ * Check accumulated token usage for the current week.
+ * - Free: 50 000 tokens/week  (hard cap)
+ * - Pro: 500 000 tokens/week  (soft-degrade at 80 %, hard cap at 100 %)
+ */
+export async function checkWeeklyTokenBudget(
+  userId: string,
+  isPro: boolean,
+): Promise<TokenBudgetResult> {
+  const supabase = getAdmin();
+  const limit = isPro ? WEEKLY_TOKEN_LIMITS.pro : WEEKLY_TOKEN_LIMITS.free;
+  const weekStart = getWeekStartMs();
+
+  const { data, error } = await supabase
+    .from('runs')
+    .select('token_count')
+    .eq('user_id', userId)
+    .gte('created_at', weekStart)
+    .neq('status', 'erro');
+
+  if (error) {
+    console.error('[CostGuard] Failed to sum weekly tokens:', error.message);
+    // Fail-open
+    return { allowed: true, shouldDegradeModel: false, tokensUsed: 0, tokenLimit: limit };
+  }
+
+  const tokensUsed = (data ?? []).reduce(
+    (sum: number, row: { token_count?: number }) =>
+      sum + (typeof row.token_count === 'number' ? row.token_count : 0),
+    0,
+  );
+
+  // Hard cap
+  if (tokensUsed >= limit) {
+    return {
+      allowed: false,
+      reason: `Limite semanal de tokens atingido (${tokensUsed.toLocaleString('pt-BR')}/${limit.toLocaleString('pt-BR')}). ${isPro ? 'Renova na próxima segunda-feira.' : 'Faça upgrade para Pro para mais tokens.'}`,
+      shouldDegradeModel: false,
+      tokensUsed,
+      tokenLimit: limit,
+    };
+  }
+
+  // Soft cap (Pro only): degrade model at 80 %
+  const shouldDegradeModel = isPro && tokensUsed >= limit * TOKEN_DEGRADE_THRESHOLD;
+
+  return { allowed: true, shouldDegradeModel, tokensUsed, tokenLimit: limit };
+}
+
+// ── 4. Token anomaly logging ──────────────────────────────────────────────────
+
+/**
+ * Log a warning if a single run consumed an anomalous amount of tokens.
+ * Called after successful AI calls for monitoring / alerting.
+ */
+export function logTokenAnomaly(
+  runId: string,
+  userId: string,
+  model: string,
+  tokenCount: number,
+): void {
+  if (tokenCount > ANOMALY_THRESHOLD_TOKENS) {
+    console.warn(
+      JSON.stringify({
+        level: 'warn',
+        event: 'token_anomaly',
+        runId,
+        userId,
+        model,
+        tokenCount,
+        threshold: ANOMALY_THRESHOLD_TOKENS,
+        message: `Run consumed ${tokenCount} tokens (>${ANOMALY_THRESHOLD_TOKENS} threshold)`,
+      }),
+    );
+  }
+}
+

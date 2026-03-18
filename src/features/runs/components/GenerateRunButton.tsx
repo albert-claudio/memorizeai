@@ -1,6 +1,6 @@
 
 import type { Source, RunObjective } from '@/lib/types';
-import type { UserCreditsInfo } from '@/app/actions/createRun';
+import type { MonthlyUsage } from '@/lib/billing/run-entitlement';
 import { Icons } from './Icons';
 
 interface GenerateRunButtonProps {
@@ -8,7 +8,7 @@ interface GenerateRunButtonProps {
   selectedObjective: RunObjective | null;
   creating: boolean;
   targetCount: number;
-  credits: UserCreditsInfo | null;
+  usage: MonthlyUsage | null;
   onCreateRun: () => void;
 }
 
@@ -17,11 +17,45 @@ export function GenerateRunButton({
   selectedObjective,
   creating,
   targetCount,
-  credits,
+  usage,
   onCreateRun,
 }: GenerateRunButtonProps) {
-  const noCredits = selectedObjective !== 'flashcards' && (credits?.totalCredits ?? 0) <= 0;
-  const canGenerate = selectedSource && selectedObjective && !creating && !noCredits;
+  // Determine if monthly limit is reached for the selected objective
+  const limitReached = (() => {
+    if (!usage || !selectedObjective) return false;
+
+    if (selectedObjective === 'flashcards') {
+      return usage.flashcardsUsed >= usage.flashcardsLimit;
+    }
+    // simulados / logica_juridica
+    return usage.simuladosUsed >= usage.simuladosLimit;
+  })();
+
+  const canGenerate = selectedSource && selectedObjective && !creating && !limitReached;
+
+  // Build the status message
+  const statusMessage = (() => {
+    if (!selectedSource || !selectedObjective) return null;
+
+    if (limitReached) {
+      if (selectedObjective === 'flashcards') {
+        return '🔒 Limite mensal de gerações atingido. Faça upgrade para Pro.';
+      }
+      return '🔒 Limite mensal de simulados atingido. Renova no próximo mês.';
+    }
+
+    if (selectedObjective === 'flashcards') {
+      if (usage && !usage.isPro) {
+        return `✨ ${usage.flashcardsUsed}/${usage.flashcardsLimit} gerações usadas este mês`;
+      }
+      return '✨ Até 10.000 cards por deck no Pro!';
+    }
+
+    if (usage) {
+      return `📝 ${usage.simuladosUsed}/${usage.simuladosLimit} simulados usados este mês`;
+    }
+    return null;
+  })();
 
   return (
     <>
@@ -55,8 +89,8 @@ export function GenerateRunButton({
             <Icons.Loader />
             Iniciando...
           </>
-        ) : noCredits ? (
-          'Sem créditos disponíveis'
+        ) : limitReached ? (
+          'Limite mensal atingido'
         ) : (
           <>
             <Icons.Sparkles />
@@ -65,17 +99,14 @@ export function GenerateRunButton({
         )}
       </button>
 
-      {selectedSource && selectedObjective && (
+      {statusMessage && (
         <p style={{
           textAlign: 'center',
           marginTop: 16,
           fontSize: 13,
-          color: 'var(--text-muted)',
+          color: limitReached ? 'var(--text-warning, #F59E0B)' : 'var(--text-muted)',
         }}>
-          {selectedObjective === 'flashcards'
-            ? '✨ Flashcards são gratuitos!'
-            : `Esta ação consumirá 1 crédito • Restam ${credits?.totalCredits ?? 0} créditos`
-          }
+          {statusMessage}
         </p>
       )}
     </>

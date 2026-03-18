@@ -5,7 +5,7 @@ import { useState, useEffect } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { useSimuladoResults } from '@/features/simulado/hooks/useSimuladoResults';
-import { ScoreOverview, ResultList } from '@/features/simulado/components/Results';
+import { ScoreOverview, ResultList, ErrorStats } from '@/features/simulado/components/Results';
 import { Icons } from '@/features/deck/components/Icons';
 
 export default function ResultadoPage() {
@@ -104,6 +104,8 @@ export default function ResultadoPage() {
           acertos={simulado.acertos} 
           total={simulado.total_questoes} 
         />
+
+        <ErrorStats respostas={respostas} />
         
         <div style={{ marginTop: 32 }}>
           <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 16 }}>Gabarito Detalhado</h2>

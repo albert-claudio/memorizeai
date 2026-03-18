@@ -32,7 +32,9 @@ export function ActiveRunProgress({ activeRun, onRetry }: ActiveRunProgressProps
           ? 'rgba(34, 197, 94, 0.1)'
           : activeRun.status === 'erro'
             ? 'rgba(239, 68, 68, 0.1)'
-            : 'rgba(99, 102, 241, 0.1)',
+            : activeRun.status === 'base_insuficiente'
+              ? 'rgba(245, 158, 11, 0.1)'
+              : 'rgba(99, 102, 241, 0.1)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -41,12 +43,16 @@ export function ActiveRunProgress({ activeRun, onRetry }: ActiveRunProgressProps
           ? 'var(--success)'
           : activeRun.status === 'erro'
             ? 'var(--error)'
-            : 'var(--accent)',
+            : activeRun.status === 'base_insuficiente'
+              ? '#F59E0B'
+              : 'var(--accent)',
       }}>
         {activeRun.status === 'concluido' ? (
           <Icons.Check />
         ) : activeRun.status === 'erro' ? (
           <span style={{ fontSize: 32 }}>!</span>
+        ) : activeRun.status === 'base_insuficiente' ? (
+          <span style={{ fontSize: 32 }}>⚠️</span>
         ) : (
           <Icons.Sparkles />
         )}
@@ -57,6 +63,7 @@ export function ActiveRunProgress({ activeRun, onRetry }: ActiveRunProgressProps
         {activeRun.status === 'processando' && '🤖 Gerando com IA...'}
         {activeRun.status === 'concluido' && '✅ Pronto!'}
         {activeRun.status === 'erro' && '❌ Erro'}
+        {activeRun.status === 'base_insuficiente' && '📄 Base Insuficiente'}
       </h2>
 
       <p style={{ color: 'var(--text-secondary)', marginBottom: 16 }}>
@@ -75,6 +82,14 @@ export function ActiveRunProgress({ activeRun, onRetry }: ActiveRunProgressProps
           </>
         )}
         {activeRun.status === 'erro' && (activeRun.error_message || 'Falha na geração')}
+        {activeRun.status === 'base_insuficiente' && (
+          <>
+            O documento não tem conteúdo técnico suficiente para gerar questões de alta fidelidade.
+            {activeRun.error_message && (
+              <><br /><em style={{ fontSize: 12, color: 'var(--text-muted)' }}>{activeRun.error_message}</em></>
+            )}
+          </>
+        )}
       </p>
 
       {(activeRun.status === 'pendente' || activeRun.status === 'processando') && (
@@ -98,7 +113,7 @@ export function ActiveRunProgress({ activeRun, onRetry }: ActiveRunProgressProps
         </div>
       )}
 
-      {activeRun.status === 'erro' && (
+      {(activeRun.status === 'erro' || activeRun.status === 'base_insuficiente') && (
         <button
           onClick={onRetry}
           style={{

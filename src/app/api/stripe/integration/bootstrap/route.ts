@@ -10,7 +10,7 @@ const supabaseAdmin = createClient(
 );
 
 function isBillingE2EEnabled(): boolean {
-  return process.env.BILLING_E2E_ENABLED === 'true';
+  return process.env.BILLING_E2E_ENABLED === 'true' && process.env.NODE_ENV !== 'production';
 }
 
 function hasValidKey(request: NextRequest): boolean {

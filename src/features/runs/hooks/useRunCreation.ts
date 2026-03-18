@@ -2,7 +2,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { createRun } from '@/app/actions/createRun';
-import type { Run, RunObjective } from '@/lib/types';
+import type { Run, RunObjective, Banca, Dificuldade } from '@/lib/types';
 import { runService } from '../services/runService';
 
 export type RunWithExtras = Run & {
@@ -60,7 +60,7 @@ export function useRunCreation({ userId, onRunCompleted, deductCredit }: UseRunC
                 }
               }, 1500);
             }
-          } else if (run.status === 'erro') {
+          } else if (run.status === 'erro' || run.status === 'base_insuficiente') {
             stopPolling();
             setCreating(false);
           }
@@ -76,7 +76,9 @@ export function useRunCreation({ userId, onRunCompleted, deductCredit }: UseRunC
     objective: RunObjective, 
     targetCount: number,
     requiresCredits: boolean,
-    hasCredits: boolean
+    hasCredits: boolean,
+    banca?: Banca | null,
+    dificuldade?: Dificuldade | null,
   ) => {
     if (!userId || !sourceId || !objective) return;
     if (requiresCredits && !hasCredits) return;
@@ -84,7 +86,7 @@ export function useRunCreation({ userId, onRunCompleted, deductCredit }: UseRunC
     setCreating(true);
     
     try {
-      const result = await createRun(sourceId, objective, 'auto', targetCount);
+      const result = await createRun(sourceId, objective, 'auto', targetCount, undefined, banca, dificuldade);
 
       if (result.success && result.runId) {
         startPolling(result.runId);

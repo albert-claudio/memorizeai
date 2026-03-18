@@ -177,21 +177,101 @@ export async function checkEventIdempotencyAtomic(
 }
 
 /**
- * Mark a webhook event as successfully processed.
- * Call this AFTER successful processing to prevent future duplicates.
+ * Webhook event processing outcomes.
+ *
+ * - applied:           Business logic change was applied to the user.
+ * - ignored:           Event is not relevant to our business logic (intentional skip).
+ * - transient_failure: Retriable problem (DB timeout, race condition, sync delay).
+ *                      Stripe will retry delivery when we respond with a non-2xx status.
+ * - permanent_failure: Unrecoverable issue (missing identity, broken payload).
+ *                      We respond 200 to stop retries and log for manual review.
  */
-export async function markEventProcessed(eventId: string, processingTimeMs: number): Promise<void> {
+export type WebhookOutcome = 'applied' | 'ignored' | 'transient_failure' | 'permanent_failure';
+
+/**
+ * Finalize a webhook event with an explicit outcome.
+ *
+ * Rules:
+ * - applied / ignored   → success=true  (blocks future retries via idempotency)
+ * - transient_failure    → success=false (idempotency allows retry on next delivery)
+ * - permanent_failure    → success=true  (blocks retries — manual intervention needed)
+ *                          + logged as console.error alert
+ */
+export async function finalizeEvent(
+  eventId: string,
+  outcome: WebhookOutcome,
+  outcomeReason: string,
+  processingTimeMs: number,
+): Promise<void> {
+  // applied / ignored / permanent_failure → mark success=true to block idempotency retries
+  // transient_failure → leave success=false so idempotency allows retry
+  const successFlag = outcome !== 'transient_failure';
+
+  if (outcome === 'permanent_failure') {
+    console.error(
+      `[Webhook ALERT] Permanent failure for event ${eventId}: ${outcomeReason}. ` +
+      'Manual review required.'
+    );
+    // Fire async alert — never blocks event processing
+    sendPermanentFailureAlert(eventId, outcomeReason).catch(() => {});
+  }
+
   try {
     await supabaseAdmin
       .from('webhook_logs')
       .update({
-        success: true,
+        success: successFlag,
         processing_time_ms: processingTimeMs,
+        outcome,
+        outcome_reason: outcomeReason || null,
       })
       .eq('event_id', eventId);
   } catch (error) {
-    console.error('[Webhook Security] Failed to mark event processed:', error);
+    console.error('[Webhook Security] Failed to finalize event:', error);
   }
+}
+
+/**
+ * Fire an operational alert when a webhook event reaches permanent_failure.
+ * Sends an HTTP POST to `WEBHOOK_ALERT_URL` (Discord, Slack, PagerDuty, etc.).
+ * Silently no-ops when the env var is not configured.
+ */
+async function sendPermanentFailureAlert(
+  eventId: string,
+  reason: string,
+): Promise<void> {
+  const alertUrl = process.env.WEBHOOK_ALERT_URL;
+  if (!alertUrl) return;
+
+  const payload = {
+    // Generic format — works with Slack, Discord (via content), or custom endpoints
+    text: `🚨 *Webhook permanent_failure*\n\n*Event:* \`${eventId}\`\n*Reason:* ${reason}\n*Time:* ${new Date().toISOString()}\n\nReview in \`webhook_logs\` → \`SELECT * FROM webhook_logs WHERE event_id = '${eventId}'\``,
+    // Discord-compatible
+    content: `🚨 **Webhook permanent_failure**\n**Event:** \`${eventId}\`\n**Reason:** ${reason}\n**Time:** ${new Date().toISOString()}`,
+  };
+
+  try {
+    const response = await fetch(alertUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(5000),
+    });
+
+    if (!response.ok) {
+      console.warn(`[Webhook Alert] Alert endpoint returned ${response.status}`);
+    }
+  } catch (error) {
+    console.warn('[Webhook Alert] Failed to send alert:', error);
+  }
+}
+
+/**
+ * Mark a webhook event as successfully processed.
+ * @deprecated Use finalizeEvent() with an explicit outcome instead.
+ */
+export async function markEventProcessed(eventId: string, processingTimeMs: number): Promise<void> {
+  await finalizeEvent(eventId, 'applied', '', processingTimeMs);
 }
 
 // ============================================================================

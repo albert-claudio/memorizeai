@@ -193,10 +193,19 @@ async function extractTextFromDOCX(buffer: Buffer): Promise<{ text: string; page
 }
 
 /**
- * Extrai texto do PPTX usando officeparser
- * Retorna o texto de cada slide
+ * Structured slide content extracted from PPTX
  */
-async function extractTextFromPPTX(buffer: Buffer): Promise<{ text: string; pageCount: number }> {
+interface SlideContent {
+  slideNumber: number;
+  title: string;
+  body: string;
+}
+
+/**
+ * Extrai texto do PPTX usando officeparser
+ * Retorna o texto de cada slide + estrutura de slides
+ */
+async function extractTextFromPPTX(buffer: Buffer): Promise<{ text: string; pageCount: number; slides: SlideContent[] }> {
   const fs = await import('fs');
   const path = await import('path');
   const os = await import('os');
@@ -221,23 +230,17 @@ async function extractTextFromPPTX(buffer: Buffer): Promise<{ text: string; page
         }
         
         // Determine which argument is the data
-        // If firstArg has toText method, it's the data (single-arg callback)
-        // If firstArg is an Error, reject with it
-        // If secondArg has toText method, it's the data (two-arg callback)
-        let data: { toText: () => string; content?: Array<{ type: string }> } | null = null;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let data: any = null;
         
         if (firstArg && typeof firstArg.toText === 'function') {
-          // Single argument callback - firstArg is the data
           data = firstArg;
         } else if (firstArg instanceof Error) {
-          // Error in first position
           reject(firstArg);
           return;
         } else if (secondArg && typeof secondArg.toText === 'function') {
-          // Two argument callback - secondArg is the data
           data = secondArg;
         } else if (firstArg && firstArg.type === 'pptx') {
-          // It's AST data even without toText check
           data = firstArg;
         }
         
@@ -246,15 +249,62 @@ async function extractTextFromPPTX(buffer: Buffer): Promise<{ text: string; page
           return;
         }
         
-        // Call toText() to get the actual text content
+        // Get flat text for backwards compat
         const text = typeof data.toText === 'function' ? data.toText() : '';
         
-        // Count slides from the AST content array
-        const slideCount = data?.content?.filter((item: { type: string }) => item.type === 'slide')?.length || 1;
+        // Extract per-slide structure from AST
+        const slides: SlideContent[] = [];
+        let slideNumber = 0;
+        
+        if (Array.isArray(data.content)) {
+          for (const item of data.content) {
+            if (item.type === 'slide') {
+              slideNumber++;
+              
+              // Collect text boxes from the slide
+              const textParts: string[] = [];
+              if (Array.isArray(item.content)) {
+                for (const child of item.content) {
+                  if (child.type === 'text' && typeof child.value === 'string' && child.value.trim()) {
+                    textParts.push(child.value.trim());
+                  } else if (Array.isArray(child.content)) {
+                    // Nested content (e.g., text inside shapes)
+                    for (const nested of child.content) {
+                      if (typeof nested === 'string' && nested.trim()) {
+                        textParts.push(nested.trim());
+                      } else if (nested && typeof nested.value === 'string' && nested.value.trim()) {
+                        textParts.push(nested.value.trim());
+                      }
+                    }
+                  }
+                }
+              }
+              
+              // First meaningful text part is the title, rest is body
+              const title = textParts.length > 0 ? textParts[0] : `Slide ${slideNumber}`;
+              const body = textParts.slice(1).join('\n');
+              
+              if (title || body) {
+                slides.push({ slideNumber, title, body });
+              }
+            }
+          }
+        }
+        
+        // Fallback: if AST parsing didn't yield slides, split flat text
+        if (slides.length === 0 && text.trim()) {
+          const paragraphs = text.split('\n\n').filter((p: string) => p.trim());
+          slides.push({
+            slideNumber: 1,
+            title: 'Documento',
+            body: paragraphs.join('\n'),
+          });
+        }
         
         resolve({
           text,
-          pageCount: slideCount,
+          pageCount: slideNumber || 1,
+          slides,
         });
       });
     });
@@ -337,7 +387,7 @@ export async function POST(request: NextRequest) {
     const buffer = Buffer.from(arrayBuffer);
     
     // Extract text based on file type
-    let extractedData: { text: string; pageCount: number };
+    let extractedData: { text: string; pageCount: number; slides?: SlideContent[] };
     
     switch (fileType) {
       case 'pdf':
@@ -369,6 +419,7 @@ export async function POST(request: NextRequest) {
     console.log('Documento processado:', {
       fileName: file.name,
       ...stats,
+      slides: extractedData.slides?.length ?? 0,
     });
     
     return NextResponse.json({ 
@@ -376,6 +427,7 @@ export async function POST(request: NextRequest) {
       chunks,
       stats,
       fileType,
+      ...(extractedData.slides ? { slides: extractedData.slides } : {}),
     });
     
   } catch (error) {

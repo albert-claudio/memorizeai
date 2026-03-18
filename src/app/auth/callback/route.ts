@@ -1,6 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
+import { trackServer } from '@/lib/analytics/server-tracker'
 
 // ============================================================================
 // SECURITY: Safe redirect validation to prevent open redirect attacks
@@ -59,6 +60,7 @@ export async function GET(request: NextRequest) {
       
       // If this was an email confirmation, redirect to confirmation success page
       if (type === 'signup' || type === 'email') {
+        trackServer('email_confirmed', data.user.id, { method: type });
         return NextResponse.redirect(new URL('/email-confirmado', request.url))
       }
       

@@ -5,9 +5,9 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import type { User } from '@supabase/supabase-js';
-import type { Source, RunObjective } from '@/lib/types';
+import type { Source, RunObjective, Banca, Dificuldade } from '@/lib/types';
 import { useSources } from '@/features/runs/hooks/useSources';
-import { useCredits } from '@/features/runs/hooks/useCredits';
+import { useMonthlyUsage } from '@/features/runs/hooks/useMonthlyUsage';
 import { useRunCreation } from '@/features/runs/hooks/useRunCreation';
 import { useTierLimits } from '@/features/dashboard/hooks/useTierLimits';
 import {
@@ -16,6 +16,8 @@ import {
   ActiveRunProgress,
   SourceStep,
   ObjectiveStep,
+  BancaStep,
+  DifficultyStep,
   QuantityStep,
   GenerateRunButton,
 } from '@/features/runs/components';
@@ -52,9 +54,9 @@ export default function RunsPage() {
   } = useSources(user?.id);
 
   const { 
-    credits, 
-    deductCredit 
-  } = useCredits();
+    usage,
+    refreshUsage,
+  } = useMonthlyUsage();
 
   const { 
     tierLimits 
@@ -67,28 +69,41 @@ export default function RunsPage() {
     resetRun 
   } = useRunCreation({ 
     userId: user?.id,
-    deductCredit 
     // Default redirect logic inside hook handles navigation
   });
 
   // Local Selection State
   const [selectedSource, setSelectedSource] = useState<Source | null>(null);
   const [selectedObjective, setSelectedObjective] = useState<RunObjective | null>(null);
+  const [selectedBanca, setSelectedBanca] = useState<Banca | null>(null);
+  const [selectedDifficulty, setSelectedDifficulty] = useState<Dificuldade | null>(null);
   const [targetCount, setTargetCount] = useState(10);
+
+  // Reset banca/difficulty when objective changes away from questoes_banca
+  const handleSelectObjective = (obj: RunObjective) => {
+    setSelectedObjective(obj);
+    if (obj !== 'questoes_banca') {
+      setSelectedBanca(null);
+      setSelectedDifficulty(null);
+    }
+  };
 
   // Wrapper for run creation
   const onCreateRunQuery = () => {
     if (!selectedSource || !selectedObjective) return;
-    const requiresCredits = selectedObjective !== 'flashcards';
-    const hasCredits = (credits?.totalCredits ?? 0) > 0;
-    
+
     handleCreateRun(
       selectedSource.id, 
       selectedObjective, 
       targetCount, 
-      requiresCredits, 
-      hasCredits
+      false,  // requiresCredits — no longer used, kept for hook compat
+      true,   // hasCredits — no longer used, kept for hook compat
+      selectedObjective === 'questoes_banca' ? selectedBanca : null,
+      selectedObjective === 'questoes_banca' ? selectedDifficulty : null,
     );
+
+    // Refresh usage after run is created to update counts
+    setTimeout(() => refreshUsage(), 2000);
   };
 
   // Loading Screen
@@ -127,7 +142,7 @@ export default function RunsPage() {
         }
       `}</style>
 
-      <RunsHeader credits={credits} />
+      <RunsHeader usage={usage} />
 
       <main style={{ padding: 24, maxWidth: 800, margin: '0 auto' }}>
         {activeRun && (
@@ -149,9 +164,23 @@ export default function RunsPage() {
             <ObjectiveStep
               isPro={tierLimits?.isPro ?? null}
               selectedObjective={selectedObjective}
-              onSelectObjective={setSelectedObjective}
+              onSelectObjective={handleSelectObjective}
               onRequireUpgrade={() => router.push('/upgrade')}
             />
+
+            {selectedObjective === 'questoes_banca' && (
+              <>
+                <BancaStep
+                  selectedBanca={selectedBanca}
+                  onSelectBanca={setSelectedBanca}
+                />
+
+                <DifficultyStep
+                  selectedDifficulty={selectedDifficulty}
+                  onSelectDifficulty={setSelectedDifficulty}
+                />
+              </>
+            )}
 
             <QuantityStep
               isPro={tierLimits?.isPro ?? null}
@@ -165,7 +194,7 @@ export default function RunsPage() {
               selectedObjective={selectedObjective}
               creating={creating}
               targetCount={targetCount}
-              credits={credits}
+              usage={usage}
               onCreateRun={onCreateRunQuery}
             />
           </>

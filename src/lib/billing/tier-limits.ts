@@ -9,7 +9,8 @@ export const TIER_LIMITS = {
   free: {
     maxDecks: 3,
     maxCardsPerDeck: 50,
-    hasAI: false,
+    hasFlashcardGeneration: true,
+    hasSimulados: false,
     hasUploads: true,       // Free pode fazer upload (limitado por semana)
     maxWeeklyUploads: 3,    // 3 uploads por semana
     hasFSRS: false,
@@ -18,7 +19,8 @@ export const TIER_LIMITS = {
   pro: {
     maxDecks: Infinity,
     maxCardsPerDeck: 10000,
-    hasAI: true,
+    hasFlashcardGeneration: true,
+    hasSimulados: true,
     hasUploads: true,
     maxWeeklyUploads: Infinity,
     hasFSRS: true,
@@ -32,7 +34,8 @@ export interface TierLimits {
   tier: UserTier;
   maxDecks: number;
   maxCardsPerDeck: number;
-  hasAI: boolean;
+  hasFlashcardGeneration: boolean;
+  hasSimulados: boolean;
   hasUploads: boolean;
   maxWeeklyUploads: number;
   hasFSRS: boolean;
@@ -86,7 +89,7 @@ export async function getUserTierLimits(userId: string): Promise<TierLimits> {
   // Get user profile to check if pro
   const { data: profile } = await supabase
     .from('profiles')
-    .select('is_pro, subscription_status, subscription_period_end')
+    .select('is_pro, subscription_status, subscription_period_end, admin_override_pro')
     .eq('id', userId)
     .single();
 
@@ -168,7 +171,7 @@ export async function canAddCardToDeck(deckId: string, userId: string): Promise<
   if (currentCount >= limits.maxCardsPerDeck) {
     return {
       allowed: false,
-      reason: `Limite de ${limits.maxCardsPerDeck} cards por deck atingido. Faça upgrade para Pro para cards ilimitados.`,
+      reason: `Limite de ${limits.maxCardsPerDeck} cards por deck atingido. Faça upgrade para Pro para até 10.000 cards por deck.`,
       currentCount,
       maxCount: limits.maxCardsPerDeck,
     };
@@ -178,13 +181,13 @@ export async function canAddCardToDeck(deckId: string, userId: string): Promise<
 }
 
 /**
- * Check if user can use AI generation features
- * Only Pro users
+ * @deprecated Use authorizeRunCreation from '@/lib/billing/run-entitlement' instead.
+ * This function incorrectly blocks Free users from flashcard generation.
  */
 export async function canUseAI(userId: string): Promise<{ allowed: boolean; reason?: string }> {
   const limits = await getUserTierLimits(userId);
 
-  if (!limits.hasAI) {
+  if (!limits.hasFlashcardGeneration && !limits.hasSimulados) {
     return {
       allowed: false,
       reason: 'Geração por IA é exclusiva para usuários Pro. Faça upgrade para usar este recurso.',

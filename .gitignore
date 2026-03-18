@@ -32,6 +32,7 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+!.env.example
 
 # vercel
 .vercel
@@ -39,3 +40,14 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# local-only artifacts not for main
+/.agent/
+/audit-results-final.txt
+/audit-results.txt
+/security-audit-results.txt
+/test_output.txt
+/test-output.txt
+/src/backup/migrations_backup/
+/SUPPORT.md
+/security-audit.mjs

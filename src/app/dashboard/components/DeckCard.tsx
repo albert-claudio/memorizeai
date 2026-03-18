@@ -166,6 +166,30 @@ export function DeckCard({
           </div>
         </div>
         
+        {/* Track Badges */}
+        {(deck.concurso || deck.materia || deck.tema) && (
+          <div style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            gap: 6,
+            marginBottom: deck.description ? 12 : 16,
+          }}>
+            {[deck.concurso, deck.materia, deck.tema].filter(Boolean).map((t, idx) => (
+              <span key={idx} style={{
+                padding: '4px 8px',
+                background: 'rgba(255,255,255,0.05)',
+                border: '1px solid rgba(255,255,255,0.08)',
+                borderRadius: 6,
+                color: '#a1a1aa',
+                fontSize: 12,
+                fontWeight: 500,
+              }}>
+                {t}
+              </span>
+            ))}
+          </div>
+        )}
+
         {/* Subtitle - AI generated badge */}
         {deck.description && (
           <p style={{ 

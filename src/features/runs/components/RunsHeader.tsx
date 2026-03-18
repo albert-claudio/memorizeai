@@ -1,13 +1,19 @@
 
 import Link from 'next/link';
-import type { UserCreditsInfo } from '@/app/actions/createRun';
+import type { MonthlyUsage } from '@/lib/billing/run-entitlement';
 import { Icons } from './Icons';
 
 interface RunsHeaderProps {
-  credits: UserCreditsInfo | null;
+  usage: MonthlyUsage | null;
 }
 
-export function RunsHeader({ credits }: RunsHeaderProps) {
+export function RunsHeader({ usage }: RunsHeaderProps) {
+  const label = usage
+    ? usage.isPro
+      ? `${usage.simuladosUsed}/${usage.simuladosLimit} simulados este mês`
+      : `${usage.flashcardsUsed}/${usage.flashcardsLimit} gerações este mês`
+    : null;
+
   return (
     <header style={{
       padding: '16px 24px',
@@ -42,7 +48,7 @@ export function RunsHeader({ credits }: RunsHeaderProps) {
         </div>
       </div>
 
-      {credits && (
+      {label && (
         <div style={{
           display: 'flex',
           alignItems: 'center',
@@ -54,7 +60,7 @@ export function RunsHeader({ credits }: RunsHeaderProps) {
         }}>
           <Icons.Coins />
           <span style={{ fontSize: 14, fontWeight: 600 }}>
-            {credits.totalCredits} créditos
+            {label}
           </span>
         </div>
       )}

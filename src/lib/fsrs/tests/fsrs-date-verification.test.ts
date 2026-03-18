@@ -236,7 +236,7 @@ describe('End-to-End Date Simulation', () => {
       }
       
       if (grade === 0) {
-        // After lapse, user reviews again in 1 minute (but we simulate relearning completion)
+        // After lapse, user reviews again in relearning until the card graduates
         currentTime = currentTime + 10 * 60 * 1000 // 10 minutes
         // Complete relearning
         for (let step = 0; step < 3; step++) {
@@ -257,6 +257,7 @@ describe('End-to-End Date Simulation', () => {
     
     // User shouldn't have forgotten everything after a lapse
     expect(state.stability).toBeGreaterThan(1)
+    expect(state.stability).toBeLessThan(DEFAULT_WEIGHTS.w2 * 10)
     // But stability should be lower than perfect run
     expect(state.stability).toBeLessThan(50)
   })

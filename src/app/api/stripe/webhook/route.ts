@@ -9,8 +9,9 @@ import {
   logWebhookAttempt,
   recordFailedAttempt,
   checkEventIdempotencyAtomic,
-  markEventProcessed,
+  finalizeEvent,
 } from '@/lib/security/webhook-security';
+import type { WebhookOutcome } from '@/lib/security/webhook-security';
 
 // ============================================================================
 // WEBHOOK HANDLER - Secure Backend Processing
@@ -326,22 +327,26 @@ export async function POST(request: NextRequest) {
   // 3. VERIFY TIMESTAMP (Replay attack protection)
   // ================================================================
   if (preCheck.timestampResult && !preCheck.timestampResult.valid) {
-    console.error('[Stripe Webhook] Timestamp verification failed:', preCheck.timestampResult.reason);
-    await recordFailedAttempt(clientIP);
-    await logWebhookAttempt({
-      ip: clientIP,
-      eventId: null,
-      eventType: null,
-      success: false,
-      error: preCheck.timestampResult.reason,
-      signatureValid: false,
-      timestampValid: false,
-      processingTimeMs: Date.now() - startTime,
-    });
-    return NextResponse.json(
-      { error: 'Event too old or invalid timestamp' },
-      { status: 400 }
-    );
+    // Skip in development: stripe listen CLI causes clock-skew false positives.
+    // HMAC signature verification below is the primary security gate.
+    if (process.env.NODE_ENV === 'production') {
+      console.error('[Stripe Webhook] Timestamp verification failed:', preCheck.timestampResult.reason);
+      await logWebhookAttempt({
+        ip: clientIP,
+        eventId: null,
+        eventType: null,
+        success: false,
+        error: preCheck.timestampResult.reason,
+        signatureValid: false,
+        timestampValid: false,
+        processingTimeMs: Date.now() - startTime,
+      });
+      return NextResponse.json(
+        { error: 'Event too old or invalid timestamp' },
+        { status: 400 }
+      );
+    }
+    console.warn('[Stripe Webhook] Timestamp check skipped in dev:', preCheck.timestampResult.reason);
   }
 
   // ================================================================
@@ -403,9 +408,11 @@ export async function POST(request: NextRequest) {
   }
 
   // ================================================================
-  // 7. PROCESS EVENT
+  // 7. PROCESS EVENT — each branch sets outcome explicitly
   // ================================================================
   const now = Date.now();
+  let outcome: WebhookOutcome = 'ignored';
+  let outcomeReason = '';
 
   try {
     switch (event.type) {
@@ -428,20 +435,30 @@ export async function POST(request: NextRequest) {
           const userId = session.metadata?.user_id ?? subscriptionResponse.metadata?.user_id ?? null;
 
           if (!userId) {
-            console.error('[Stripe Webhook] Unable to resolve user_id for checkout.session.completed');
+            outcome = 'permanent_failure';
+            outcomeReason = `Unable to resolve user_id for checkout.session.completed (session ${session.id})`;
+            console.error(`[Stripe Webhook] ${outcomeReason}`);
             break;
           }
 
           if (!customerId) {
-            console.error('[Stripe Webhook] Missing customer id for checkout.session.completed');
+            outcome = 'permanent_failure';
+            outcomeReason = `Missing customer id for checkout.session.completed (session ${session.id})`;
+            console.error(`[Stripe Webhook] ${outcomeReason}`);
             break;
           }
 
           const tier = getSubscriptionTier(subItems.data[0]?.price?.id || null);
+
+          if (tier === 'free') {
+            outcome = 'transient_failure';
+            outcomeReason = `Unmapped paid price in checkout.session.completed (session ${session.id}, sub ${subId})`;
+            console.error(`[Stripe Webhook] ${outcomeReason}`);
+            break;
+          }
           
-          // SECURITY: is_pro must be based on tier, not just subscription existence
-          // Unknown/unmapped prices result in 'free' tier, so is_pro = false
-          const isPro = tier === 'pro' || tier === 'enterprise';
+          // Paid tier already validated above (unknown paid prices trigger transient failure).
+          const isPro = true;
 
           // Update profile to premium
           const { error: profileError } = await supabaseAdmin
@@ -457,7 +474,10 @@ export async function POST(request: NextRequest) {
             .eq('id', userId);
 
           if (profileError) {
-            console.error('[Stripe Webhook] Profile update error:', profileError);
+            outcome = 'transient_failure';
+            outcomeReason = `Profile update failed for user ${userId}: ${profileError.message}`;
+            console.error(`[Stripe Webhook] ${outcomeReason}`);
+            break;
           }
 
           // Create subscription record
@@ -480,10 +500,19 @@ export async function POST(request: NextRequest) {
             });
 
           if (subError) {
-            console.error('[Stripe Webhook] Subscription insert error:', subError);
+            outcome = 'transient_failure';
+            outcomeReason = `Subscription upsert failed for user ${userId}: ${subError.message}`;
+            console.error(`[Stripe Webhook] ${outcomeReason}`);
+            break;
           }
 
-          console.log(`[Stripe Webhook] User ${userId} upgraded to ${tier}`);
+          outcome = 'applied';
+          outcomeReason = `User ${userId} upgraded to ${tier}`;
+          console.log(`[Stripe Webhook] ${outcomeReason}`);
+        } else {
+          // Non-subscription checkout (e.g. one-time payment) — not relevant
+          outcome = 'ignored';
+          outcomeReason = `checkout.session.completed with mode=${session.mode}, not a subscription`;
         }
         break;
       }
@@ -500,11 +529,22 @@ export async function POST(request: NextRequest) {
         });
 
         if (!resolvedIdentity.userId || !resolvedIdentity.customerId) {
-          console.error('[Stripe Webhook] Unable to resolve identity for customer.subscription.updated:', subUpdated.id);
+          outcome = 'permanent_failure';
+          outcomeReason = `Unable to resolve identity for customer.subscription.updated (sub ${subUpdated.id})`;
+          console.error(`[Stripe Webhook] ${outcomeReason}`);
           break;
         }
 
         const tier = getSubscriptionTier(subUpdated.items.data[0]?.price?.id || null);
+        if (
+          tier === 'free' &&
+          (subUpdated.status === 'active' || subUpdated.status === 'past_due')
+        ) {
+          outcome = 'transient_failure';
+          outcomeReason = `Unmapped paid price in customer.subscription.updated (sub ${subUpdated.id})`;
+          console.error(`[Stripe Webhook] ${outcomeReason}`);
+          break;
+        }
         const { periodStart: updatedPeriodStart, periodEnd: updatedPeriodEnd } = getPeriodBounds(subUpdated);
         const updatedPriceId = subUpdated.items.data[0]?.price?.id || null;
         const isPaidTier = tier === 'pro' || tier === 'enterprise';
@@ -540,7 +580,10 @@ export async function POST(request: NextRequest) {
           .eq('id', resolvedIdentity.userId);
 
         if (profileError) {
-          console.error('[Stripe Webhook] Profile update error:', profileError);
+          outcome = 'transient_failure';
+          outcomeReason = `Profile update failed for user ${resolvedIdentity.userId}: ${profileError.message}`;
+          console.error(`[Stripe Webhook] ${outcomeReason}`);
+          break;
         }
 
         const subscriptionPayload: {
@@ -582,10 +625,15 @@ export async function POST(request: NextRequest) {
           });
 
         if (subError) {
-          console.error('[Stripe Webhook] Subscription upsert error:', subError);
+          outcome = 'transient_failure';
+          outcomeReason = `Subscription upsert failed for sub ${subUpdated.id}: ${subError.message}`;
+          console.error(`[Stripe Webhook] ${outcomeReason}`);
+          break;
         }
 
-        console.log(`[Stripe Webhook] Subscription ${subUpdated.id} updated to ${subUpdated.status}`);
+        outcome = 'applied';
+        outcomeReason = `Subscription ${subUpdated.id} updated to ${subUpdated.status}`;
+        console.log(`[Stripe Webhook] ${outcomeReason}`);
         break;
       }
 
@@ -601,7 +649,9 @@ export async function POST(request: NextRequest) {
         });
 
         if (!resolvedIdentity.userId || !resolvedIdentity.customerId) {
-          console.error('[Stripe Webhook] Unable to resolve identity for customer.subscription.deleted:', subscription.id);
+          outcome = 'permanent_failure';
+          outcomeReason = `Unable to resolve identity for customer.subscription.deleted (sub ${subscription.id})`;
+          console.error(`[Stripe Webhook] ${outcomeReason}`);
           break;
         }
 
@@ -618,7 +668,10 @@ export async function POST(request: NextRequest) {
           .eq('id', resolvedIdentity.userId);
 
         if (profileError) {
-          console.error('[Stripe Webhook] Profile downgrade error:', profileError);
+          outcome = 'transient_failure';
+          outcomeReason = `Profile downgrade failed for user ${resolvedIdentity.userId}: ${profileError.message}`;
+          console.error(`[Stripe Webhook] ${outcomeReason}`);
+          break;
         }
 
         const canceledPeriod = toUnixMs(subscription.ended_at);
@@ -636,13 +689,18 @@ export async function POST(request: NextRequest) {
             updated_at: now,
           }, {
             onConflict: 'stripe_subscription_id',
-          })
+          });
 
         if (subError) {
-          console.error('[Stripe Webhook] Subscription cancel upsert error:', subError);
+          outcome = 'transient_failure';
+          outcomeReason = `Subscription cancel upsert failed for sub ${subscription.id}: ${subError.message}`;
+          console.error(`[Stripe Webhook] ${outcomeReason}`);
+          break;
         }
 
-        console.log(`[Stripe Webhook] User ${resolvedIdentity.userId} downgraded to free`);
+        outcome = 'applied';
+        outcomeReason = `User ${resolvedIdentity.userId} downgraded to free`;
+        console.log(`[Stripe Webhook] ${outcomeReason}`);
         break;
       }
 
@@ -653,7 +711,10 @@ export async function POST(request: NextRequest) {
         const invoice = event.data.object as Stripe.Invoice;
         const paidSubscriptionId = getInvoiceSubscriptionId(invoice);
         if (!paidSubscriptionId) {
-          console.warn('[Stripe Webhook] invoice.paid without subscription id, ignoring');
+          // Legitimately not subscription-related (e.g. one-time invoice)
+          outcome = 'ignored';
+          outcomeReason = 'invoice.paid without subscription id';
+          console.warn(`[Stripe Webhook] ${outcomeReason}`);
           break;
         }
 
@@ -664,13 +725,21 @@ export async function POST(request: NextRequest) {
         });
 
         if (!resolvedIdentity.userId || !resolvedIdentity.customerId) {
-          console.error('[Stripe Webhook] Unable to resolve identity for invoice.paid:', paidSubscriptionId);
+          outcome = 'permanent_failure';
+          outcomeReason = `Unable to resolve identity for invoice.paid (sub ${paidSubscriptionId})`;
+          console.error(`[Stripe Webhook] ${outcomeReason}`);
           break;
         }
 
         const paidPriceId = getInvoicePriceId(invoice);
         const { periodStart: paidPeriodStart, periodEnd: paidPeriodEnd } = getInvoicePeriodBounds(invoice);
         const tier = getSubscriptionTier(paidPriceId);
+        if (tier === 'free') {
+          outcome = 'transient_failure';
+          outcomeReason = `Unmapped paid price in invoice.paid (sub ${paidSubscriptionId})`;
+          console.error(`[Stripe Webhook] ${outcomeReason}`);
+          break;
+        }
         const isPro = tier === 'pro' || tier === 'enterprise';
 
         // Payment confirmed -> active subscription state
@@ -699,7 +768,10 @@ export async function POST(request: NextRequest) {
           .eq('id', resolvedIdentity.userId);
 
         if (profileError) {
-          console.error('[Stripe Webhook] Invoice paid profile update error:', profileError);
+          outcome = 'transient_failure';
+          outcomeReason = `Invoice paid profile update failed for user ${resolvedIdentity.userId}: ${profileError.message}`;
+          console.error(`[Stripe Webhook] ${outcomeReason}`);
+          break;
         }
 
         const subscriptionPayload: {
@@ -739,10 +811,15 @@ export async function POST(request: NextRequest) {
           });
 
         if (subError) {
-          console.error('[Stripe Webhook] Invoice paid subscription upsert error:', subError);
+          outcome = 'transient_failure';
+          outcomeReason = `Invoice paid subscription upsert failed for sub ${paidSubscriptionId}: ${subError.message}`;
+          console.error(`[Stripe Webhook] ${outcomeReason}`);
+          break;
         }
 
-        console.log(`[Stripe Webhook] Invoice paid processed for user ${resolvedIdentity.userId}`);
+        outcome = 'applied';
+        outcomeReason = `Invoice paid processed for user ${resolvedIdentity.userId}`;
+        console.log(`[Stripe Webhook] ${outcomeReason}`);
         break;
       }
 
@@ -759,7 +836,9 @@ export async function POST(request: NextRequest) {
         });
 
         if (!resolvedIdentity.userId || !resolvedIdentity.customerId) {
-          console.error('[Stripe Webhook] Unable to resolve identity for invoice.payment_failed:', failedSubscriptionId);
+          outcome = 'permanent_failure';
+          outcomeReason = `Unable to resolve identity for invoice.payment_failed (sub ${failedSubscriptionId})`;
+          console.error(`[Stripe Webhook] ${outcomeReason}`);
           break;
         }
 
@@ -788,7 +867,10 @@ export async function POST(request: NextRequest) {
           .eq('id', resolvedIdentity.userId);
 
         if (error) {
-          console.error('[Stripe Webhook] Past due update error:', error);
+          outcome = 'transient_failure';
+          outcomeReason = `Past due profile update failed for user ${resolvedIdentity.userId}: ${error.message}`;
+          console.error(`[Stripe Webhook] ${outcomeReason}`);
+          break;
         }
 
         if (failedSubscriptionId) {
@@ -824,39 +906,72 @@ export async function POST(request: NextRequest) {
             });
 
           if (subError) {
-            console.error('[Stripe Webhook] Past due subscription upsert error:', subError);
+            outcome = 'transient_failure';
+            outcomeReason = `Past due subscription upsert failed for sub ${failedSubscriptionId}: ${subError.message}`;
+            console.error(`[Stripe Webhook] ${outcomeReason}`);
+            break;
           }
         }
 
-        console.log(`[Stripe Webhook] User ${resolvedIdentity.userId} marked as past_due`);
+        outcome = 'applied';
+        outcomeReason = `User ${resolvedIdentity.userId} marked as past_due`;
+        console.log(`[Stripe Webhook] ${outcomeReason}`);
         break;
       }
 
       default:
-        console.log(`[Stripe Webhook] Unhandled event type: ${event.type}`);
+        outcome = 'ignored';
+        outcomeReason = `Unhandled event type: ${event.type}`;
+        console.log(`[Stripe Webhook] ${outcomeReason}`);
     }
 
     // ================================================================
-    // 8. LOG SUCCESS AND ACKNOWLEDGE WEBHOOK
+    // 8. FINALIZE EVENT BASED ON OUTCOME
     // ================================================================
+    const processingTimeMs = Date.now() - startTime;
+
+    await finalizeEvent(event.id, outcome, outcomeReason, processingTimeMs);
+
     await logWebhookAttempt({
       ip: clientIP,
       eventId: event.id,
       eventType: event.type,
-      success: true,
+      success: outcome === 'applied' || outcome === 'ignored',
+      error: (outcome === 'transient_failure' || outcome === 'permanent_failure')
+        ? outcomeReason
+        : undefined,
       signatureValid: true,
       timestampValid: true,
-      processingTimeMs: Date.now() - startTime,
+      processingTimeMs,
     });
 
-    // Mark event as successfully processed (prevents future duplicates)
-    await markEventProcessed(event.id, Date.now() - startTime);
-    
-    return NextResponse.json({ received: true });
+    // applied / ignored → 200, event is done
+    if (outcome === 'applied' || outcome === 'ignored') {
+      return NextResponse.json({ received: true, outcome });
+    }
+
+    // permanent_failure → 200 to stop Stripe retries (manual review needed)
+    if (outcome === 'permanent_failure') {
+      return NextResponse.json({ received: true, outcome, reason: outcomeReason });
+    }
+
+    // transient_failure → 500 so Stripe retries delivery
+    return NextResponse.json(
+      { error: 'Transient processing failure', outcome, reason: outcomeReason },
+      { status: 500 }
+    );
 
   } catch (error) {
-    console.error('[Stripe Webhook] Processing error:', error);
-    
+    // Unhandled exception → transient failure (Stripe retries)
+    const processingTimeMs = Date.now() - startTime;
+
+    console.error('[Stripe Webhook] Unhandled processing error:', error);
+
+    await finalizeEvent(event.id, 'transient_failure',
+      error instanceof Error ? error.message : 'Unknown processing error',
+      processingTimeMs,
+    );
+
     await logWebhookAttempt({
       ip: clientIP,
       eventId: event.id,
@@ -865,7 +980,7 @@ export async function POST(request: NextRequest) {
       error: error instanceof Error ? error.message : 'Unknown processing error',
       signatureValid: true,
       timestampValid: true,
-      processingTimeMs: Date.now() - startTime,
+      processingTimeMs,
     });
     
     return NextResponse.json(

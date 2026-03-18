@@ -30,7 +30,7 @@ export default function AuthLayout({
   children: React.ReactNode;
 }) {
   const features = [
-    'Flashcards ilimitados',
+    'Geração em grande volume',
     'Repetição espaçada inteligente',
     'Upload de PDF com IA',
     'Analytics de evolução',
@@ -138,7 +138,7 @@ export default function AuthLayout({
         
         {/* Footer */}
         <p style={{ fontSize: 14, color: 'var(--text-muted)', position: 'relative', zIndex: 1 }}>
-          © 2025 Vimens. Todos os direitos reservados.
+          © 2026 Vimens. Todos os direitos reservados.
         </p>
       </div>
       

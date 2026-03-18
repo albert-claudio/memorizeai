@@ -1,13 +1,62 @@
 'use server';
 
 import { createServerClient } from '@supabase/ssr';
+import { createClient } from '@supabase/supabase-js';
 import { cookies } from 'next/headers';
-import type { RunObjective, ModelPreference } from '@/lib/types';
+import type { RunObjective, ModelPreference, Banca, Dificuldade } from '@/lib/types';
 import { hasProAccess } from '@/lib/billing/pro-access';
+import { trackServer } from '@/lib/analytics/server-tracker';
+import {
+  checkRunEntitlement,
+  getMonthlyRunCounts,
+  buildMonthlyUsage,
+  type MonthlyUsage,
+} from '@/lib/billing/run-entitlement';
 
 // Generate cryptographically secure random ID
 function generateId() {
   return crypto.randomUUID();
+}
+
+function getRunProcessInternalSecret(): string | null {
+  return process.env.RUNS_PROCESS_INTERNAL_SECRET?.trim() || null;
+}
+
+const MAX_TRIGGER_ATTEMPTS = 3;
+const INITIAL_BACKOFF_MS = 200;
+
+/**
+ * Fire-and-forget trigger with exponential backoff.
+ * If all attempts fail, the run stays 'pendente' and the recovery cron picks it up.
+ */
+function triggerProcessWithRetry(
+  baseUrl: string,
+  runId: string,
+  secret: string
+): void {
+  const attempt = async (n: number) => {
+    try {
+      const res = await fetch(`${baseUrl}/api/runs/process`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-internal-secret': secret,
+        },
+        body: JSON.stringify({ runId }),
+      });
+      if (!res.ok && n < MAX_TRIGGER_ATTEMPTS) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+    } catch (err) {
+      if (n < MAX_TRIGGER_ATTEMPTS) {
+        const delay = INITIAL_BACKOFF_MS * Math.pow(2, n - 1);
+        await new Promise(r => setTimeout(r, delay));
+        return attempt(n + 1);
+      }
+      console.error(`[createRun] All ${MAX_TRIGGER_ATTEMPTS} trigger attempts failed for run ${runId}:`, err);
+    }
+  };
+  attempt(1).catch(() => {});
 }
 
 /**
@@ -40,41 +89,32 @@ export interface CreateRunResult {
   error?: string;
 }
 
-export interface UserCreditsInfo {
-  planRunsRemaining: number;
-  extraCredits: number;
-  totalCredits: number;
-}
-
 /**
- * Get user's current credit balance
+ * Get user's monthly generation usage for UI display.
  */
-export async function getUserCredits(): Promise<UserCreditsInfo | null> {
+export async function getMonthlyUsage(): Promise<MonthlyUsage | null> {
   const supabase = await createSupabaseServer();
-  
+
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return null;
-  
-  const { data: credits } = await supabase
-    .from('user_credits')
-    .select('plan_runs_remaining, extra_credits')
-    .eq('user_id', user.id)
+
+  const { data: profile } = await supabase
+    .from('profiles')
+    .select('is_pro, subscription_status, subscription_period_end, admin_override_pro')
+    .eq('id', user.id)
     .single();
-  
-  if (!credits) {
-    // New user, default credits
-    return {
-      planRunsRemaining: 10,
-      extraCredits: 0,
-      totalCredits: 10,
-    };
-  }
-  
-  return {
-    planRunsRemaining: credits.plan_runs_remaining,
-    extraCredits: credits.extra_credits,
-    totalCredits: credits.plan_runs_remaining + credits.extra_credits,
-  };
+
+  const isPro = hasProAccess(profile);
+
+  // Use service role to count runs (RLS would filter by user anyway, but
+  // server actions run with the user's session so this is fine)
+  const adminSupabase = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  );
+  const counts = await getMonthlyRunCounts(adminSupabase, user.id);
+
+  return buildMonthlyUsage(isPro, counts);
 }
 
 /**
@@ -91,9 +131,19 @@ export async function createRun(
   objective: RunObjective,
   modelPreference: ModelPreference = 'auto',
   targetCount: number = 10,
-  deckId?: string
+  deckId?: string,
+  banca?: Banca | null,
+  dificuldade?: Dificuldade | null,
 ): Promise<CreateRunResult> {
   try {
+    const runProcessSecret = getRunProcessInternalSecret();
+    if (!runProcessSecret) {
+      return {
+        success: false,
+        error: 'Configuraçao interna ausente para processamento de runs.',
+      };
+    }
+
     const supabase = await createSupabaseServer();
     
     // 1. Validate user
@@ -102,39 +152,25 @@ export async function createRun(
       return { success: false, error: 'Usuário não autenticado' };
     }
     
-    // 2. Check Pro status for non-flashcard objectives
-    // Free users CAN generate flashcards from uploaded sources
-    // but simulados and other advanced objectives require Pro
+    // 2. Entitlement check (tier + monthly limits)
     const { data: profile } = await supabase
       .from('profiles')
-      .select('is_pro, subscription_status, subscription_period_end')
+      .select('is_pro, subscription_status, subscription_period_end, admin_override_pro')
       .eq('id', user.id)
       .single();
 
     const isPro = hasProAccess(profile);
-    
-    if (!isPro && objective !== 'flashcards') {
-      return { 
-        success: false, 
-        error: 'Este tipo de geração é exclusivo para usuários Pro. Faça upgrade para usar este recurso.' 
-      };
-    }
 
-    if (!isPro && targetCount > 10) {
-      return {
-        success: false,
-        error: 'Usuários gratuitos estão limitados a 10 itens por geração. Faça upgrade para gerar mais.'
-      };
-    }
-    
-    // 3. Check credits (only for simulados, flashcards are FREE for Pro)
-    const requiresCredits = objective !== 'flashcards';
-    
-    if (requiresCredits) {
-      const credits = await getUserCredits();
-      if (!credits || credits.totalCredits <= 0) {
-        return { success: false, error: 'Sem créditos disponíveis' };
-      }
+    const adminSupabase = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    );
+    const entitlement = await checkRunEntitlement(
+      adminSupabase, user.id, isPro, objective, targetCount,
+    );
+
+    if (!entitlement.allowed) {
+      return { success: false, error: entitlement.reason };
     }
     
     // 3. Validate source exists and belongs to user
@@ -175,48 +211,55 @@ export async function createRun(
     const now = Date.now();
     const runId = generateId();
     
-    // SECURITY: Server-side targetCount enforcement to prevent abuse
-    const MAX_TARGET_COUNT = 50;
-    const validatedTargetCount = Math.min(Math.max(1, targetCount), MAX_TARGET_COUNT);
+    // targetCount already validated by entitlement check
+    const validatedTargetCount = entitlement.validatedTargetCount;
     
+    // Backend-enforced: only questoes_banca gets banca/dificuldade
+    const VALID_BANCAS: Banca[] = ['FCC', 'FGV', 'CESPE'];
+    const VALID_DIFICULDADES: Dificuldade[] = ['facil', 'medio', 'dificil', 'muito_dificil'];
+
+    const safeBanca = objective === 'questoes_banca' && banca && VALID_BANCAS.includes(banca)
+      ? banca
+      : null;
+    const safeDificuldade = objective === 'questoes_banca' && dificuldade && VALID_DIFICULDADES.includes(dificuldade)
+      ? dificuldade
+      : null;
+
+    // Build insert payload — only include banca/dificuldade when non-null
+    // so the insert works even before the migration is applied
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const runPayload: Record<string, any> = {
+      id: runId,
+      user_id: user.id,
+      source_id: sourceId,
+      deck_id: validatedDeckId,
+      objective,
+      model_preference: modelPreference,
+      target_count: validatedTargetCount,
+      status: 'pendente',
+      attempt_count: 0,
+      items_generated: 0,
+      created_at: now,
+      updated_at: now,
+    };
+    if (safeBanca) runPayload.banca = safeBanca;
+    if (safeDificuldade) runPayload.dificuldade = safeDificuldade;
+
     const { error: insertError } = await supabase
       .from('runs')
-      .insert({
-        id: runId,
-        user_id: user.id,
-        source_id: sourceId,
-        deck_id: validatedDeckId,
-        objective,
-        model_preference: modelPreference,
-        target_count: validatedTargetCount,
-        status: 'pendente',
-        attempt_count: 0,
-        items_generated: 0,
-        created_at: now,
-        updated_at: now,
-      });
+      .insert(runPayload);
     
     if (insertError) {
       console.error('[createRun] Insert error:', insertError);
       return { success: false, error: 'Erro ao criar run' };
     }
     
-    // 5. Trigger the local API processor (fire and forget)
-    // Using local API instead of Edge Function for better debugging
-    const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
-    
-    console.log(`[createRun] Triggering local processor for run ${runId}`);
-    
-    fetch(`${baseUrl}/api/runs/process`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-internal-secret': process.env.SUPABASE_SERVICE_ROLE_KEY || '',
-      },
-      body: JSON.stringify({ runId }),
-    }).catch(err => {
-      console.error('[createRun] Failed to trigger local processor:', err);
-    });
+    // 5. Trigger the local API processor (fire-and-forget with retry)
+    const { getBaseUrl } = await import('@/lib/url');
+    const baseUrl = getBaseUrl();
+    console.log(`[createRun] Triggering processor for run ${runId} (up to ${MAX_TRIGGER_ATTEMPTS} attempts)`);
+    triggerProcessWithRetry(baseUrl, runId, runProcessSecret);
+    trackServer('run_created', user.id, { runId, objective });
     
     return { success: true, runId };
     

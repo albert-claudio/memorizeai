@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { hasProAccess } from '@/lib/billing/pro-access';
+import { checkRunEntitlement } from '@/lib/billing/run-entitlement';
 
 // Generate cryptographically secure random ID
 function generateId() {
@@ -60,47 +61,33 @@ export async function POST(request: NextRequest) {
     }
 
     // ================================================================
-    // PRO TIER VALIDATION - Non-flashcard objectives are Pro-only
-    // Free users CAN generate flashcards from uploaded sources
+    // ENTITLEMENT CHECK (tier + monthly limits)
     // ================================================================
     const { data: profile } = await supabase
       .from('profiles')
-      .select('is_pro, subscription_status, subscription_period_end')
+      .select('is_pro, subscription_status, subscription_period_end, admin_override_pro')
       .eq('id', user.id)
       .single();
 
     const isPro = hasProAccess(profile);
 
-    if (!isPro && objective !== 'flashcards') {
+    const adminSupabase = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    );
+
+    const entitlement = await checkRunEntitlement(
+      adminSupabase, user.id, isPro, objective, targetCount,
+    );
+
+    if (!entitlement.allowed) {
       return NextResponse.json(
-        { error: 'Este tipo de geração é exclusivo para usuários Pro.' },
-        { status: 403 }
+        { error: entitlement.reason },
+        { status: 403 },
       );
     }
 
-    // ================================================================
-    // SERVER-SIDE targetCount ENFORCEMENT
-    // ================================================================
-    const MAX_TARGET_COUNT = 50;
-    const validatedTargetCount = Math.min(Math.max(1, targetCount), MAX_TARGET_COUNT);
-
-    // Check credits
-    const { data: credits } = await supabase
-      .from('user_credits')
-      .select('plan_runs_remaining, extra_credits')
-      .eq('user_id', user.id)
-      .single();
-
-    const totalCredits = credits 
-      ? credits.plan_runs_remaining + credits.extra_credits 
-      : 10; // Default for new users
-
-    if (totalCredits <= 0) {
-      return NextResponse.json(
-        { error: 'No credits available' },
-        { status: 402 }
-      );
-    }
+    const validatedTargetCount = entitlement.validatedTargetCount;
 
     // Validate source exists and belongs to user
     const { data: source, error: sourceError } = await supabase
