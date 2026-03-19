@@ -1,38 +1,29 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { createLogger } from '@/lib/logger';
+import { authenticateCronRequest } from '@/lib/security/cron-auth';
 
 const MAX_ATTEMPTS = 3;
-const PENDING_THRESHOLD_MS = 2 * 60 * 1000;      // 2 minutes
-const PROCESSING_THRESHOLD_MS = 10 * 60 * 1000;   // 10 minutes
+const PENDING_THRESHOLD_MS = 2 * 60 * 1000;
+const PROCESSING_THRESHOLD_MS = 10 * 60 * 1000;
 
 /**
  * GET /api/cron/recover-runs
  *
- * Vercel Cron job that runs every 5 minutes.
+ * Scheduled job that runs every 5 minutes.
  * Recovers runs stuck in 'pendente' or 'processando' by re-triggering
  * the processor, or marking them as permanently failed.
- *
- * Auth: Bearer CRON_SECRET (Vercel injects this automatically for cron jobs)
  */
 export async function GET(request: NextRequest) {
   const logger = createLogger({ component: 'recover-runs' });
 
-  // ── Auth ──────────────────────────────────────────────────────────────
-  const authHeader = request.headers.get('authorization');
-  const cronSecret = process.env.CRON_SECRET?.trim();
-
-  if (!cronSecret) {
-    logger.error('cron_misconfigured', { message: 'CRON_SECRET not set' });
-    return NextResponse.json({ error: 'Server misconfigured' }, { status: 500 });
+  const auth = await authenticateCronRequest(request);
+  if (!auth.ok) {
+    const log = auth.status >= 500 ? logger.error.bind(logger) : logger.warn.bind(logger);
+    log('cron_auth_failed', { status: auth.status, reason: auth.error });
+    return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
 
-  if (authHeader !== `Bearer ${cronSecret}`) {
-    logger.warn('cron_auth_failed', {});
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
-  // ── Setup ─────────────────────────────────────────────────────────────
   const supabase = createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.SUPABASE_SERVICE_ROLE_KEY!
@@ -51,7 +42,6 @@ export async function GET(request: NextRequest) {
   let retriggered = 0;
   let markedFailed = 0;
 
-  // ── 1. Stuck PENDENTE runs (created > 2 min ago) ──────────────────────
   const pendingCutoff = now - PENDING_THRESHOLD_MS;
 
   const { data: stuckPending } = await supabase
@@ -78,7 +68,6 @@ export async function GET(request: NextRequest) {
       markedFailed++;
       logger.info('cron_marked_failed', { runId: run.id, attempts });
     } else {
-      // Re-trigger processing
       fetch(`${baseUrl}/api/runs/process`, {
         method: 'POST',
         headers: {
@@ -94,7 +83,6 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  // ── 2. Stuck PROCESSANDO runs (started > 10 min ago) ──────────────────
   const processingCutoff = now - PROCESSING_THRESHOLD_MS;
 
   const { data: stuckProcessing } = await supabase
@@ -122,8 +110,8 @@ export async function GET(request: NextRequest) {
       markedFailed++;
       logger.info('cron_marked_failed', { runId: run.id, attempts });
     } else {
-      // Re-trigger — the idempotency guard in /api/runs/process will
-      // accept the run because started_at is old enough.
+      // The idempotency guard in /api/runs/process accepts the run because
+      // started_at is old enough.
       fetch(`${baseUrl}/api/runs/process`, {
         method: 'POST',
         headers: {

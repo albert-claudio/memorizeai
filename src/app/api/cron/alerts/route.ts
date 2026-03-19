@@ -1,29 +1,29 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { createLogger } from '@/lib/logger';
+import { authenticateCronRequest } from '@/lib/security/cron-auth';
 
-const WINDOW_MS = 30 * 60 * 1000; // 30 minutes
+const WINDOW_MS = 30 * 60 * 1000;
 
-// Thresholds for alerting
 const THRESHOLDS = {
-  runErrors: 3,       // Alert if > 3 run errors in 30 min
-  webhookFailures: 2, // Alert if > 2 webhook failures in 30 min
+  runErrors: 3,
+  webhookFailures: 2,
 };
 
 /**
  * GET /api/cron/alerts
  *
- * Vercel Cron job (every 30 minutes).
+ * Scheduled job (every 30 minutes).
  * Scans for anomalies in runs, webhooks, and dispatches aggregated Discord alerts.
  */
 export async function GET(request: NextRequest) {
   const logger = createLogger({ component: 'alerts-cron' });
 
-  // Auth
-  const authHeader = request.headers.get('authorization');
-  const cronSecret = process.env.CRON_SECRET?.trim();
-  if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const auth = await authenticateCronRequest(request);
+  if (!auth.ok) {
+    const log = auth.status >= 500 ? logger.error.bind(logger) : logger.warn.bind(logger);
+    log('cron_auth_failed', { status: auth.status, reason: auth.error });
+    return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
 
   const supabase = createClient(
@@ -34,7 +34,6 @@ export async function GET(request: NextRequest) {
   const cutoff = Date.now() - WINDOW_MS;
   const alerts: string[] = [];
 
-  // ── 1. Run errors ──────────────────────────────────────────────────────
   const { count: runErrorCount } = await supabase
     .from('runs')
     .select('id', { count: 'exact', head: true })
@@ -46,7 +45,6 @@ export async function GET(request: NextRequest) {
     logger.warn('alert_run_errors', { count: runErrorCount });
   }
 
-  // ── 2. Stuck runs (still pending/processing) ──────────────────────────
   const { count: stuckCount } = await supabase
     .from('runs')
     .select('id', { count: 'exact', head: true })
@@ -58,7 +56,6 @@ export async function GET(request: NextRequest) {
     logger.warn('alert_stuck_runs', { count: stuckCount });
   }
 
-  // ── 3. Webhook failures ────────────────────────────────────────────────
   const cutoffISO = new Date(cutoff).toISOString();
   const { count: webhookFailCount } = await supabase
     .from('webhook_logs')
@@ -71,7 +68,6 @@ export async function GET(request: NextRequest) {
     logger.warn('alert_webhook_failures', { count: webhookFailCount });
   }
 
-  // ── Dispatch ───────────────────────────────────────────────────────────
   const summary = {
     runErrors: runErrorCount ?? 0,
     stuckRuns: stuckCount ?? 0,

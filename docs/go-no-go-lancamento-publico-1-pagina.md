@@ -44,8 +44,8 @@ Pode virar `GO` para lancamento publico amplo quando TODOS os itens abaixo estiv
 
 1. Migration aplicada em staging e producao, com confirmacao no banco correto.
 2. `checkout -> webhook -> acesso Pro -> portal -> cancelamento -> refund` validado com Stripe real.
-3. `CRON_SECRET`, `RUNS_PROCESS_INTERNAL_SECRET`, chaves Supabase, Stripe, IA e Redis conferidos no ambiente deployado.
-4. Crons funcionando no deploy e Redis acessivel.
+3. `QSTASH_CURRENT_SIGNING_KEY`, `QSTASH_NEXT_SIGNING_KEY`, `RUNS_PROCESS_INTERNAL_SECRET`, chaves Supabase, Stripe, IA e Redis conferidos no ambiente deployado.
+4. Crons funcionando via QStash no deploy e Redis acessivel.
 5. Checagens de seguranca pos-deploy confirmadas:
    admin protegido, `app_events` sem insert anonimo, checkout com origins permitidas, `/api/runs/process` protegido.
 6. Canal de alertas ativo e alguem responsavel por responder incidentes.

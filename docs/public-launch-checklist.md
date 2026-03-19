@@ -19,7 +19,8 @@
 - `STRIPE_PRO_PRICE_ID`
 - `NEXT_PUBLIC_APP_URL`
 - `RUNS_PROCESS_INTERNAL_SECRET`
-- `CRON_SECRET`
+- `QSTASH_CURRENT_SIGNING_KEY`
+- `QSTASH_NEXT_SIGNING_KEY`
 - `ADMIN_EMAILS`
 - `ADMIN_PASSWORD`
 - `UPSTASH_REDIS_REST_URL`
@@ -32,7 +33,8 @@
 - Run `npm run build`.
 - Run the new Supabase migration in staging, then production.
 - Verify Stripe webhook delivery in staging with a real signed event.
-- Verify cron routes with `CRON_SECRET` configured.
+- Create the QStash schedules for `/api/cron/recover-runs`, `/api/cron/health-check`, and `/api/cron/alerts`.
+- Verify cron routes with valid QStash signatures.
 - Confirm Redis is reachable from the deployed app; rate limiting and circuit breaker are intentionally weaker without it.
 
 ## 4. Security checks after deploy

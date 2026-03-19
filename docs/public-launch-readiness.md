@@ -77,7 +77,8 @@ As variaveis abaixo precisam estar configuradas no ambiente de deploy:
 - `STRIPE_PRO_PRICE_ID`
 - `NEXT_PUBLIC_APP_URL`
 - `RUNS_PROCESS_INTERNAL_SECRET`
-- `CRON_SECRET`
+- `QSTASH_CURRENT_SIGNING_KEY`
+- `QSTASH_NEXT_SIGNING_KEY`
 - `ADMIN_EMAILS`
 - `ADMIN_PASSWORD`
 - `UPSTASH_REDIS_REST_URL`
@@ -102,7 +103,8 @@ Esses testes ainda precisam acontecer com servicos reais:
 - Validar o Billing Portal.
 - Validar cancelamento no fim do ciclo.
 - Validar reembolso automatico dentro da janela elegivel.
-- Validar os crons com `CRON_SECRET` configurado.
+- Criar os schedules do QStash para os endpoints de cron.
+- Validar os crons com assinatura valida do QStash.
 - Confirmar Redis acessivel a partir do ambiente deployado.
 
 Sem essa etapa, o build local estar verde nao garante que o ambiente publico esta correto.
@@ -147,7 +149,7 @@ Recomenda-se liberar o site ao publico apenas quando todos os itens abaixo estiv
 - env vars completas no deploy
 - webhook Stripe validado em staging
 - checkout, confirmacao, portal, cancelamento e refund testados com Stripe real
-- crons funcionando com segredo configurado
+- crons funcionando via QStash com assinatura valida
 - Redis confirmado no ambiente deployado
 - canal de alertas configurado e monitorado
 - textos juridicos revisados
