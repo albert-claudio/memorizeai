@@ -124,11 +124,28 @@ export async function recordAISuccess(model: string): Promise<void> {
   await redis.del(cbKey(model));
 }
 
+// Error types that should NOT trip the circuit breaker
+const NON_BREAKER_ERRORS = new Set(['rate_limit', 'payload_too_large']);
+
 /**
- * Record a failed AI call — increments the failure counter.
- * Opens the circuit breaker if the threshold is exceeded.
+ * Record a failed AI call with error classification.
+ * Only real outages (provider_unavailable, network, timeout) increment the breaker.
+ * Rate limits and payload errors are handled via retry, not circuit breaking.
+ *
+ * @param model - The AI model that failed
+ * @param errorCode - Classified error code from retry-policy.ts
  */
-export async function recordAIFailure(model: string): Promise<void> {
+export async function recordAIFailureClassified(
+  model: string,
+  errorCode: string,
+): Promise<void> {
+  // Rate limits and payload errors: skip circuit breaker entirely
+  if (NON_BREAKER_ERRORS.has(errorCode)) {
+    console.log(`[CostGuard] ${errorCode} for ${model} — not incrementing circuit breaker`);
+    return;
+  }
+
+  // Real outages: increment circuit breaker
   const redis = getRedis();
   if (!redis) return;
 
@@ -140,9 +157,19 @@ export async function recordAIFailure(model: string): Promise<void> {
   await redis.expire(key, ttlSec);
 
   if (failures >= CIRCUIT_BREAKER.threshold) {
-    console.warn(`[CostGuard] Circuit breaker OPENED for ${model} after ${failures} failures`);
+    console.warn(`[CostGuard] Circuit breaker OPENED for ${model} after ${failures} failures (errorCode: ${errorCode})`);
   }
 }
+
+/**
+ * Record a failed AI call — increments the failure counter.
+ * Opens the circuit breaker if the threshold is exceeded.
+ * @deprecated Use recordAIFailureClassified() for proper error handling.
+ */
+export async function recordAIFailure(model: string): Promise<void> {
+  return recordAIFailureClassified(model, 'unknown');
+}
+
 
 // ── 3. Weekly token budget ────────────────────────────────────────────────────
 

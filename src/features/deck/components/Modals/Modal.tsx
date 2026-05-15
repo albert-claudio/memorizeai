@@ -16,7 +16,7 @@ export function Modal({ title, children, onClose }: ModalProps) {
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
-      padding: 24,
+      padding: 'clamp(12px, 4vw, 24px)',
       zIndex: 100,
     }}>
       <div style={{
@@ -25,14 +25,14 @@ export function Modal({ title, children, onClose }: ModalProps) {
         borderRadius: 20,
         width: '100%',
         maxWidth: 480,
-        maxHeight: '90vh',
+        maxHeight: 'min(90vh, 720px)',
         overflow: 'auto',
       }}>
         <div style={{
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
-          padding: '20px 24px',
+          padding: '18px clamp(16px, 4vw, 24px)',
           borderBottom: '1px solid var(--border)',
           position: 'sticky',
           top: 0,
@@ -52,7 +52,7 @@ export function Modal({ title, children, onClose }: ModalProps) {
             <Icons.X />
           </button>
         </div>
-        <div style={{ padding: 24 }}>
+        <div style={{ padding: 'clamp(16px, 4vw, 24px)' }}>
           {children}
         </div>
       </div>

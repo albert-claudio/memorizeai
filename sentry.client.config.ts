@@ -16,7 +16,11 @@ Sentry.init({
   integrations: [
     Sentry.replayIntegration(),
     Sentry.browserTracingIntegration(),
+    Sentry.feedbackIntegration({ autoInject: false }),
   ],
+
+  // Send user PII for better debugging
+  sendDefaultPii: true,
 
   // Filter out noisy/irrelevant errors
   ignoreErrors: [
@@ -25,7 +29,24 @@ Sentry.init({
     "TypeError: Failed to fetch",
     "TypeError: NetworkError",
     "TypeError: Load failed",
+    // Browser extensions and ad-blockers
+    /^chrome-extension:\/\//,
+    /^moz-extension:\/\//,
+    // Next.js navigation cancellation
+    "NEXT_REDIRECT",
+    "NEXT_NOT_FOUND",
   ],
+
+  // Enrich error events with app context
+  beforeSend(event) {
+    // Tag environment explicitly
+    event.tags = {
+      ...event.tags,
+      app: "vimens",
+      runtime: "browser",
+    };
+    return event;
+  },
 
   environment: process.env.NODE_ENV,
 });

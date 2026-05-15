@@ -2,6 +2,7 @@
 import { useState } from 'react';
 import type { Card } from '@/lib/types';
 import { Icons } from './Icons';
+import { CardSourceBadge } from '@/components/CardSourceBadge';
 
 interface CardItemProps {
   card: Card;
@@ -47,6 +48,7 @@ export function CardItem({ card, onEdit, onDelete }: CardItemProps) {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
             <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--accent)', letterSpacing: '0.05em' }}>FRENTE</span>
             <div style={{ display: 'flex', gap: 4 }}>
+              <CardSourceBadge reference={card.sourceReference} />
               <button
                 onClick={(e) => { e.stopPropagation(); onEdit(card); }}
                 style={{ padding: 6, background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', borderRadius: 6 }}
@@ -82,7 +84,10 @@ export function CardItem({ card, onEdit, onDelete }: CardItemProps) {
           flexDirection: 'column',
           transform: 'rotateY(180deg)',
         }}>
-          <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--accent)', letterSpacing: '0.05em', marginBottom: 12 }}>VERSO</span>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
+            <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--accent)', letterSpacing: '0.05em' }}>VERSO</span>
+            <CardSourceBadge reference={card.sourceReference} />
+          </div>
           <p style={{ flex: 1, fontSize: 15, lineHeight: 1.5, overflow: 'hidden' }}>{card.back}</p>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--text-muted)', fontSize: 12, marginTop: 8 }}>
             <Icons.Rotate />

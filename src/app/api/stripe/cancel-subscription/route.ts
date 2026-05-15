@@ -31,8 +31,8 @@ function getAllowedOrigins(request: NextRequest): Set<string> {
     [
       request.nextUrl.origin,
       getBaseUrl(),
-      'https://memoriza.app',
-      'https://www.memoriza.app',
+      'https://vimens.app',
+      'https://www.vimens.app',
       'http://localhost:3000',
     ]
       .map((origin) => normalizeOrigin(origin ?? null))
@@ -76,6 +76,47 @@ function getPeriodBounds(subscription: Stripe.Subscription): {
 
 function isCancellableStatus(status: Stripe.Subscription.Status): boolean {
   return !['canceled', 'incomplete_expired'].includes(status);
+}
+
+async function syncCanceledRenewalState(params: {
+  supabaseAdmin: SupabaseClient;
+  userId: string;
+  subscriptionId: string;
+  status: Stripe.Subscription.Status;
+  periodStart: number | null;
+  periodEnd: number | null;
+}) {
+  const now = Date.now();
+  const profilesTable = params.supabaseAdmin.from('profiles') as unknown as {
+    update?: (payload: Record<string, unknown>) => { eq: (column: string, value: string) => unknown };
+  };
+  const subscriptionsTable = params.supabaseAdmin.from('subscriptions') as unknown as {
+    update?: (payload: Record<string, unknown>) => { eq: (column: string, value: string) => unknown };
+  };
+
+  if (typeof profilesTable.update === 'function') {
+    await profilesTable
+      .update({
+        is_pro: false,
+        subscription_status: params.status,
+        subscription_tier: 'free',
+        subscription_period_end: params.periodEnd,
+        updated_at: now,
+      })
+      .eq('id', params.userId);
+  }
+
+  if (typeof subscriptionsTable.update === 'function') {
+    await subscriptionsTable
+      .update({
+        status: params.status,
+        cancel_at_period_end: true,
+        current_period_start: params.periodStart,
+        current_period_end: params.periodEnd,
+        updated_at: now,
+      })
+      .eq('stripe_subscription_id', params.subscriptionId);
+  }
 }
 
 async function resolveStripeCustomerId(
@@ -169,6 +210,15 @@ export async function POST(request: NextRequest) {
 
     if (activeSubscription.cancel_at_period_end) {
       const existingBounds = getPeriodBounds(activeSubscription);
+      await syncCanceledRenewalState({
+        supabaseAdmin,
+        userId: user.id,
+        subscriptionId: activeSubscription.id,
+        status: activeSubscription.status,
+        periodStart: existingBounds.periodStart,
+        periodEnd: existingBounds.periodEnd,
+      });
+
       return NextResponse.json({
         ok: true,
         alreadyScheduled: true,
@@ -182,6 +232,14 @@ export async function POST(request: NextRequest) {
     });
 
     const updatedBounds = getPeriodBounds(updatedSubscription);
+    await syncCanceledRenewalState({
+      supabaseAdmin,
+      userId: user.id,
+      subscriptionId: updatedSubscription.id,
+      status: updatedSubscription.status,
+      periodStart: updatedBounds.periodStart,
+      periodEnd: updatedBounds.periodEnd,
+    });
 
     return NextResponse.json({
       ok: true,

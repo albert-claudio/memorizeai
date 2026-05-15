@@ -54,8 +54,8 @@ export default function TermosPage() {
           <section>
             <h2 style={sectionTitleStyle}>1. Escopo e aceite</h2>
             <p style={paragraphStyle}>
-              Estes Termos regem o acesso e uso da plataforma Vimens, também apresentada publicamente
-              como Memoriza, inclusive seus recursos gratuitos e pagos. Ao criar uma conta, acessar ou
+              Estes Termos regem o acesso e uso da plataforma Vimens, inclusive seus recursos gratuitos
+              e pagos. Ao criar uma conta, acessar ou
               usar a plataforma, você declara que leu e concorda com estes Termos e com a Política de
               Privacidade.
             </p>

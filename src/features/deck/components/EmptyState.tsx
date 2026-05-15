@@ -1,40 +1,43 @@
-
 import { Icons } from './Icons';
 
 interface EmptyStateProps {
-  onCreateCard: () => void;
+  onGenerateWithAI: () => void;
 }
 
-export function EmptyState({ onCreateCard }: EmptyStateProps) {
+export function EmptyState({ onGenerateWithAI }: EmptyStateProps) {
   return (
-    <div style={{
-      background: 'var(--bg-raised)',
-      border: '1px solid var(--border)',
-      borderRadius: 20,
-      padding: 64,
-      textAlign: 'center',
-    }}>
-      <div style={{
-        width: 80,
-        height: 80,
+    <div
+      style={{
+        background: 'var(--bg-raised)',
+        border: '1px solid var(--border)',
         borderRadius: 20,
-        background: 'rgba(99, 102, 241, 0.1)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        margin: '0 auto 24px',
-        color: 'var(--accent)',
-      }}>
+        padding: 64,
+        textAlign: 'center',
+      }}
+    >
+      <div
+        style={{
+          width: 80,
+          height: 80,
+          borderRadius: 20,
+          background: 'rgba(99, 102, 241, 0.1)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          margin: '0 auto 24px',
+          color: 'var(--accent)',
+        }}
+      >
         <Icons.Brain />
       </div>
       <h2 style={{ fontSize: 20, fontWeight: 600, marginBottom: 8 }}>
         Nenhum card ainda
       </h2>
-      <p style={{ color: 'var(--text-secondary)', marginBottom: 24, maxWidth: 400, margin: '0 auto 24px' }}>
-        Adicione seu primeiro flashcard para começar a estudar.
+      <p style={{ color: 'var(--text-secondary)', margin: '0 auto 24px', maxWidth: 400 }}>
+        Gere os primeiros cards com IA a partir do seu material e entre no estudo com o deck pronto.
       </p>
       <button
-        onClick={onCreateCard}
+        onClick={onGenerateWithAI}
         style={{
           display: 'inline-flex',
           alignItems: 'center',
@@ -51,7 +54,7 @@ export function EmptyState({ onCreateCard }: EmptyStateProps) {
         }}
       >
         <Icons.Plus />
-        Criar Primeiro Card
+        Gerar com IA
       </button>
     </div>
   );

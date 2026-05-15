@@ -21,8 +21,8 @@ function getAllowedOrigins(request: NextRequest): Set<string> {
     [
       request.nextUrl.origin,
       getBaseUrl(),
-      'https://memoriza.app',
-      'https://www.memoriza.app',
+      'https://vimens.app',
+      'https://www.vimens.app',
       'http://localhost:3000',
     ]
       .map((origin) => normalizeOrigin(origin ?? null))

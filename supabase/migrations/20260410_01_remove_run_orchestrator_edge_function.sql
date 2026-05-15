@@ -1,0 +1,31 @@
+-- ============================================================================
+-- OPERATIONAL NOTE: Remove run-orchestrator Edge Function from Supabase
+-- ============================================================================
+--
+-- The `run-orchestrator` Supabase Edge Function has been removed from the
+-- codebase. It was a legacy pipeline that used outdated prompts, missing
+-- banca/dificuldade support, no cost-guard, and a local hasProAccess that
+-- didn't include admin_override_pro.
+--
+-- The new pipeline uses /api/runs/process (Next.js API route) exclusively,
+-- triggered by both the createRun server action and the REST POST /api/runs.
+--
+-- ACTION REQUIRED: After deploying this change, manually remove the edge
+-- function from Supabase CLI or Dashboard:
+--
+--   supabase functions delete run-orchestrator --project-ref <PROJECT_REF>
+--
+-- Or via Supabase Dashboard:
+--   1. Go to Edge Functions
+--   2. Find "run-orchestrator"
+--   3. Delete it
+--
+-- Until this is done, the function remains callable at:
+--   https://<PROJECT_REF>.supabase.co/functions/v1/run-orchestrator
+--
+-- This is a security risk — the function has no caller but could be
+-- triggered directly by anyone with the service role key or a valid JWT.
+-- ============================================================================
+
+-- No SQL to execute. This file is an operational reminder.
+SELECT 1;

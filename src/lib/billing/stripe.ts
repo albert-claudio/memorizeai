@@ -70,7 +70,7 @@ export function getSubscriptionTier(priceId: string | null): 'free' | 'pro' | 'e
 // ============================================================================
 
 import { createClient } from '@/lib/supabase/server';
-import { hasProAccess } from '@/lib/billing/pro-access';
+import { getEffectiveProAccess } from '@/lib/billing/effective-pro-access';
 
 /**
  * Get or create a Stripe customer for a user
@@ -125,13 +125,7 @@ export async function getOrCreateCustomer(
 export async function hasActiveSubscription(userId: string): Promise<boolean> {
   const supabase = await createClient();
 
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('is_pro, subscription_status, subscription_period_end, admin_override_pro')
-    .eq('id', userId)
-    .single();
-
-  return hasProAccess(profile);
+  return getEffectiveProAccess(supabase, userId);
 }
 
 /**
@@ -161,7 +155,7 @@ export async function getSubscriptionStatus(userId: string): Promise<{
   }
 
   return {
-    isPro: hasProAccess(profile),
+    isPro: await getEffectiveProAccess(supabase, userId),
     status: profile.subscription_status || 'free',
     tier: profile.subscription_tier || 'free',
     periodEnd: profile.subscription_period_end || null,

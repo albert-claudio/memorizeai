@@ -74,7 +74,19 @@ vi.mock('@/lib/security/webhook-security', () => ({
   finalizeEvent: mocks.finalizeEvent,
 }));
 
+vi.mock('@/lib/sentry', () => ({
+  captureApiError: vi.fn(),
+  captureWarning: vi.fn(),
+  setSentryUser: vi.fn(),
+  clearSentryUser: vi.fn(),
+}));
+
+vi.mock('@/lib/notifications/emitters', () => ({
+  emitPlanRenewalNotification: vi.fn().mockResolvedValue(null),
+}));
+
 function createServerSupabaseClient(options?: {
+
   user?: { id: string; email?: string | null; user_metadata?: { name?: string } } | null;
   authError?: unknown;
   profile?: { stripe_customer_id?: string | null } | null;
@@ -182,6 +194,10 @@ function createAdminSupabaseClient(options?: {
     cancel_at_period_end: boolean;
   } | null;
 }) {
+  type MutationResult = {
+    error: { message: string; code?: string } | null;
+  };
+
   const profileState = options?.existingProfile
     ? { ...options.existingProfile }
     : null;
@@ -197,7 +213,7 @@ function createAdminSupabaseClient(options?: {
     }
   );
   const profilesUpdate = vi.fn().mockReturnValue({ eq: profilesUpdateEq });
-  const profilesUpsert = vi.fn(async () => ({ error: null }));
+  const profilesUpsert = vi.fn<() => Promise<MutationResult>>(async () => ({ error: null }));
   const profilesSelectSingle = vi.fn().mockResolvedValue({
     data: options?.profileLookupByCustomer ?? null,
     error: null,
@@ -211,7 +227,7 @@ function createAdminSupabaseClient(options?: {
   let subscriptionState = options?.existingSubscription
     ? { ...options.existingSubscription }
     : null;
-  const subscriptionsUpsert = vi.fn(async (payload: Record<string, unknown>) => {
+  const subscriptionsUpsert = vi.fn<(payload: Record<string, unknown>) => Promise<MutationResult>>(async (payload: Record<string, unknown>) => {
     subscriptionState = {
       ...(subscriptionState ?? {}),
       ...payload,
@@ -289,7 +305,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.resetModules();
 
-  process.env.NEXT_PUBLIC_APP_URL = 'https://memoriza.app';
+  process.env.NEXT_PUBLIC_APP_URL = 'https://vimens.app';
   process.env.STRIPE_WEBHOOK_SECRET = 'whsec_test';
 
   mocks.getClientIP.mockReturnValue('3.18.12.63');
@@ -341,9 +357,9 @@ describe('billing checkout', () => {
 
     const { POST } = await import('@/app/api/stripe/create-checkout/route');
 
-    const request = new NextRequest('https://memoriza.app/api/stripe/create-checkout', {
+    const request = new NextRequest('https://vimens.app/api/stripe/create-checkout', {
       method: 'POST',
-      headers: { origin: 'https://memoriza.app', 'content-type': 'application/json' },
+      headers: { origin: 'https://vimens.app', 'content-type': 'application/json' },
       body: JSON.stringify({ planKey: 'pro_monthly' }),
     });
 
@@ -363,8 +379,8 @@ describe('billing checkout', () => {
           user_id: 'user_1',
           plan_key: 'pro_monthly',
         }),
-        success_url: expect.stringContaining('https://memoriza.app/dashboard?checkout=success'),
-        cancel_url: 'https://memoriza.app/dashboard?checkout=canceled',
+        success_url: expect.stringContaining('https://vimens.app/dashboard?checkout=success'),
+        cancel_url: 'https://vimens.app/dashboard?checkout=canceled',
       }),
       expect.objectContaining({
         idempotencyKey: expect.any(String),
@@ -381,9 +397,9 @@ describe('billing checkout', () => {
 
     const { POST } = await import('@/app/api/stripe/create-checkout/route');
 
-    const request = new NextRequest('https://memoriza.app/api/stripe/create-checkout', {
+    const request = new NextRequest('https://vimens.app/api/stripe/create-checkout', {
       method: 'POST',
-      headers: { origin: 'https://memoriza.app', 'content-type': 'application/json' },
+      headers: { origin: 'https://vimens.app', 'content-type': 'application/json' },
       body: JSON.stringify({ priceId: 'price_hacker' }),
     });
 
@@ -410,9 +426,9 @@ describe('billing checkout', () => {
 
     const { POST } = await import('@/app/api/stripe/create-checkout/route');
 
-    const request = new NextRequest('https://memoriza.app/api/stripe/create-checkout', {
+    const request = new NextRequest('https://vimens.app/api/stripe/create-checkout', {
       method: 'POST',
-      headers: { origin: 'https://memoriza.app', 'content-type': 'application/json' },
+      headers: { origin: 'https://vimens.app', 'content-type': 'application/json' },
       body: JSON.stringify({ planKey: 'pro_monthly' }),
     });
 
@@ -460,7 +476,7 @@ describe('billing checkout confirmation fallback', () => {
 
     const { POST } = await import('@/app/api/stripe/confirm-checkout/route');
 
-    const request = new NextRequest('https://memoriza.app/api/stripe/confirm-checkout', {
+    const request = new NextRequest('https://vimens.app/api/stripe/confirm-checkout', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ sessionId: 'cs_confirm_123' }),
@@ -532,7 +548,7 @@ describe('billing checkout confirmation fallback', () => {
 
     const { POST } = await import('@/app/api/stripe/confirm-checkout/route');
 
-    const request = new NextRequest('https://memoriza.app/api/stripe/confirm-checkout', {
+    const request = new NextRequest('https://vimens.app/api/stripe/confirm-checkout', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ sessionId: 'cs_forbidden_123' }),
@@ -561,9 +577,9 @@ describe('billing portal', () => {
 
     const { POST } = await import('@/app/api/stripe/create-portal/route');
 
-    const request = new NextRequest('https://memoriza.app/api/stripe/create-portal', {
+    const request = new NextRequest('https://vimens.app/api/stripe/create-portal', {
       method: 'POST',
-      headers: { origin: 'https://memoriza.app' },
+      headers: { origin: 'https://vimens.app' },
     });
 
     const response = await POST(request);
@@ -573,7 +589,7 @@ describe('billing portal', () => {
     expect(json).toEqual({ url: 'https://billing.stripe.com/session/test' });
     expect(mocks.portalSessionCreate).toHaveBeenCalledWith({
       customer: 'cus_123',
-      return_url: 'https://memoriza.app/dashboard',
+      return_url: 'https://vimens.app/dashboard',
     });
   });
 
@@ -586,9 +602,9 @@ describe('billing portal', () => {
 
     const { POST } = await import('@/app/api/stripe/create-portal/route');
 
-    const request = new NextRequest('https://memoriza.app/api/stripe/create-portal', {
+    const request = new NextRequest('https://vimens.app/api/stripe/create-portal', {
       method: 'POST',
-      headers: { origin: 'https://memoriza.app' },
+      headers: { origin: 'https://vimens.app' },
     });
 
     const response = await POST(request);
@@ -798,9 +814,9 @@ describe('refund subscription', () => {
 
     const { POST } = await import('@/app/api/stripe/refund-subscription/route');
 
-    const request = new NextRequest('https://memoriza.app/api/stripe/refund-subscription', {
+    const request = new NextRequest('https://vimens.app/api/stripe/refund-subscription', {
       method: 'POST',
-      headers: { origin: 'https://memoriza.app' },
+      headers: { origin: 'https://vimens.app' },
     });
 
     const response = await POST(request);
@@ -897,9 +913,9 @@ describe('refund subscription', () => {
 
     const { POST } = await import('@/app/api/stripe/refund-subscription/route');
 
-    const request = new NextRequest('https://memoriza.app/api/stripe/refund-subscription', {
+    const request = new NextRequest('https://vimens.app/api/stripe/refund-subscription', {
       method: 'POST',
-      headers: { origin: 'https://memoriza.app' },
+      headers: { origin: 'https://vimens.app' },
     });
 
     const response = await POST(request);
@@ -943,7 +959,7 @@ describe('billing webhook', () => {
 
     const rawBody = JSON.stringify({ event: 'test' });
     const signature = `t=${Math.floor(Date.now() / 1000)},v1=test`;
-    const request = new NextRequest('https://memoriza.app/api/stripe/webhook', {
+    const request = new NextRequest('https://vimens.app/api/stripe/webhook', {
       method: 'POST',
       headers: {
         'stripe-signature': signature,
@@ -1015,7 +1031,7 @@ describe('billing webhook', () => {
 
     const { POST } = await import('@/app/api/stripe/webhook/route');
 
-    const request = new NextRequest('https://memoriza.app/api/stripe/webhook', {
+    const request = new NextRequest('https://vimens.app/api/stripe/webhook', {
       method: 'POST',
       headers: {
         'stripe-signature': `t=${Math.floor(Date.now() / 1000)},v1=test`,
@@ -1060,7 +1076,7 @@ describe('billing webhook', () => {
 
     const { POST } = await import('@/app/api/stripe/webhook/route');
 
-    const request = new NextRequest('https://memoriza.app/api/stripe/webhook', {
+    const request = new NextRequest('https://vimens.app/api/stripe/webhook', {
       method: 'POST',
       headers: {
         'stripe-signature': `t=${Math.floor(Date.now() / 1000)},v1=test`,
@@ -1107,7 +1123,7 @@ describe('billing webhook', () => {
 
     const { POST } = await import('@/app/api/stripe/webhook/route');
 
-    const request = new NextRequest('https://memoriza.app/api/stripe/webhook', {
+    const request = new NextRequest('https://vimens.app/api/stripe/webhook', {
       method: 'POST',
       headers: {
         'stripe-signature': `t=${Math.floor(Date.now() / 1000)},v1=bad`,
@@ -1145,7 +1161,7 @@ describe('billing webhook', () => {
 
     const { POST } = await import('@/app/api/stripe/webhook/route');
 
-    const request = new NextRequest('https://memoriza.app/api/stripe/webhook', {
+    const request = new NextRequest('https://vimens.app/api/stripe/webhook', {
       method: 'POST',
       headers: {
         'stripe-signature': `t=${Math.floor(Date.now() / 1000)},v1=test`,
@@ -1197,7 +1213,7 @@ describe('billing webhook', () => {
 
     const { POST } = await import('@/app/api/stripe/webhook/route');
 
-    const request = new NextRequest('https://memoriza.app/api/stripe/webhook', {
+    const request = new NextRequest('https://vimens.app/api/stripe/webhook', {
       method: 'POST',
       headers: {
         'stripe-signature': `t=${Math.floor(Date.now() / 1000)},v1=test`,
@@ -1277,7 +1293,7 @@ describe('billing webhook', () => {
 
     const { POST } = await import('@/app/api/stripe/webhook/route');
 
-    const request = new NextRequest('https://memoriza.app/api/stripe/webhook', {
+    const request = new NextRequest('https://vimens.app/api/stripe/webhook', {
       method: 'POST',
       headers: {
         'stripe-signature': `t=${Math.floor(Date.now() / 1000)},v1=test`,
@@ -1346,7 +1362,7 @@ describe('billing webhook', () => {
 
     const { POST } = await import('@/app/api/stripe/webhook/route');
 
-    const request = new NextRequest('https://memoriza.app/api/stripe/webhook', {
+    const request = new NextRequest('https://vimens.app/api/stripe/webhook', {
       method: 'POST',
       headers: {
         'stripe-signature': `t=${Math.floor(Date.now() / 1000)},v1=test`,
@@ -1429,7 +1445,7 @@ describe('billing webhook', () => {
 
     const { POST } = await import('@/app/api/stripe/webhook/route');
 
-    const request = new NextRequest('https://memoriza.app/api/stripe/webhook', {
+    const request = new NextRequest('https://vimens.app/api/stripe/webhook', {
       method: 'POST',
       headers: {
         'stripe-signature': `t=${Math.floor(Date.now() / 1000)},v1=test`,
@@ -1506,7 +1522,7 @@ describe('billing webhook', () => {
 
     const { POST } = await import('@/app/api/stripe/webhook/route');
 
-    const request = new NextRequest('https://memoriza.app/api/stripe/webhook', {
+    const request = new NextRequest('https://vimens.app/api/stripe/webhook', {
       method: 'POST',
       headers: {
         'stripe-signature': `t=${Math.floor(Date.now() / 1000)},v1=test`,
@@ -1566,7 +1582,7 @@ describe('billing webhook', () => {
 
     const { POST } = await import('@/app/api/stripe/webhook/route');
 
-    const request = new NextRequest('https://memoriza.app/api/stripe/webhook', {
+    const request = new NextRequest('https://vimens.app/api/stripe/webhook', {
       method: 'POST',
       headers: {
         'stripe-signature': `t=${Math.floor(Date.now() / 1000)},v1=test`,
@@ -1627,7 +1643,7 @@ describe('billing webhook', () => {
 
     const { POST } = await import('@/app/api/stripe/webhook/route');
 
-    const request = new NextRequest('https://memoriza.app/api/stripe/webhook', {
+    const request = new NextRequest('https://vimens.app/api/stripe/webhook', {
       method: 'POST',
       headers: {
         'stripe-signature': `t=${Math.floor(Date.now() / 1000)},v1=test`,
@@ -1673,7 +1689,7 @@ describe('billing webhook', () => {
 
     const { POST } = await import('@/app/api/stripe/webhook/route');
 
-    const request = new NextRequest('https://memoriza.app/api/stripe/webhook', {
+    const request = new NextRequest('https://vimens.app/api/stripe/webhook', {
       method: 'POST',
       headers: {
         'stripe-signature': `t=${Math.floor(Date.now() / 1000)},v1=test`,
@@ -1793,16 +1809,16 @@ describe('billing webhook', () => {
     const { POST: checkoutPOST } = await import('@/app/api/stripe/create-checkout/route');
     const { POST: webhookPOST } = await import('@/app/api/stripe/webhook/route');
 
-    const checkoutRequest = new NextRequest('https://memoriza.app/api/stripe/create-checkout', {
+    const checkoutRequest = new NextRequest('https://vimens.app/api/stripe/create-checkout', {
       method: 'POST',
-      headers: { origin: 'https://memoriza.app', 'content-type': 'application/json' },
+      headers: { origin: 'https://vimens.app', 'content-type': 'application/json' },
       body: JSON.stringify({ planKey: 'pro_monthly' }),
     });
 
     const checkoutResponse = await checkoutPOST(checkoutRequest);
     expect(checkoutResponse.status).toBe(200);
 
-    const firstWebhookResponse = await webhookPOST(new NextRequest('https://memoriza.app/api/stripe/webhook', {
+    const firstWebhookResponse = await webhookPOST(new NextRequest('https://vimens.app/api/stripe/webhook', {
       method: 'POST',
       headers: {
         'stripe-signature': `t=${Math.floor(Date.now() / 1000)},v1=test`,
@@ -1815,7 +1831,7 @@ describe('billing webhook', () => {
     expect(admin.profileState?.subscription_tier).toBe('pro');
     expect(admin.profileState?.is_pro).toBe(true);
 
-    const secondWebhookResponse = await webhookPOST(new NextRequest('https://memoriza.app/api/stripe/webhook', {
+    const secondWebhookResponse = await webhookPOST(new NextRequest('https://vimens.app/api/stripe/webhook', {
       method: 'POST',
       headers: {
         'stripe-signature': `t=${Math.floor(Date.now() / 1000)},v1=test`,
@@ -1825,12 +1841,12 @@ describe('billing webhook', () => {
     }));
     expect(secondWebhookResponse.status).toBe(200);
     expect(admin.profileState?.subscription_status).toBe('active');
-    expect(admin.profileState?.subscription_tier).toBe('enterprise');
-    expect(admin.profileState?.is_pro).toBe(true);
+    expect(admin.profileState?.subscription_tier).toBe('free');
+    expect(admin.profileState?.is_pro).toBe(false);
     expect(admin.subscriptionState?.cancel_at_period_end).toBe(true);
     expect(admin.subscriptionState?.price_id).toBe('price_enterprise_test');
 
-    const thirdWebhookResponse = await webhookPOST(new NextRequest('https://memoriza.app/api/stripe/webhook', {
+    const thirdWebhookResponse = await webhookPOST(new NextRequest('https://vimens.app/api/stripe/webhook', {
       method: 'POST',
       headers: {
         'stripe-signature': `t=${Math.floor(Date.now() / 1000)},v1=test`,
@@ -1912,7 +1928,7 @@ describe('billing webhook', () => {
 
     const { POST } = await import('@/app/api/stripe/webhook/route');
 
-    const failedResponse = await POST(new NextRequest('https://memoriza.app/api/stripe/webhook', {
+    const failedResponse = await POST(new NextRequest('https://vimens.app/api/stripe/webhook', {
       method: 'POST',
       headers: {
         'stripe-signature': `t=${Math.floor(Date.now() / 1000)},v1=test`,
@@ -1924,7 +1940,7 @@ describe('billing webhook', () => {
     expect(admin.profileState?.subscription_status).toBe('past_due');
     expect(admin.subscriptionState?.status).toBe('past_due');
 
-    const paidResponse = await POST(new NextRequest('https://memoriza.app/api/stripe/webhook', {
+    const paidResponse = await POST(new NextRequest('https://vimens.app/api/stripe/webhook', {
       method: 'POST',
       headers: {
         'stripe-signature': `t=${Math.floor(Date.now() / 1000)},v1=test`,
@@ -1974,7 +1990,7 @@ describe('billing webhook', () => {
 
     const { POST } = await import('@/app/api/stripe/webhook/route');
 
-    const request = new NextRequest('https://memoriza.app/api/stripe/webhook', {
+    const request = new NextRequest('https://vimens.app/api/stripe/webhook', {
       method: 'POST',
       headers: {
         'stripe-signature': `t=${Math.floor(Date.now() / 1000)},v1=test`,
@@ -2031,7 +2047,7 @@ describe('billing webhook', () => {
 
     const { POST } = await import('@/app/api/stripe/webhook/route');
 
-    const request = new NextRequest('https://memoriza.app/api/stripe/webhook', {
+    const request = new NextRequest('https://vimens.app/api/stripe/webhook', {
       method: 'POST',
       headers: {
         'stripe-signature': `t=${Math.floor(Date.now() / 1000)},v1=test`,
@@ -2076,7 +2092,7 @@ describe('billing webhook', () => {
 
     const { POST } = await import('@/app/api/stripe/webhook/route');
 
-    const request = new NextRequest('https://memoriza.app/api/stripe/webhook', {
+    const request = new NextRequest('https://vimens.app/api/stripe/webhook', {
       method: 'POST',
       headers: {
         'stripe-signature': `t=${Math.floor(Date.now() / 1000)},v1=test`,
@@ -2132,7 +2148,7 @@ describe('billing webhook', () => {
 
     const { POST } = await import('@/app/api/stripe/webhook/route');
 
-    const request = new NextRequest('https://memoriza.app/api/stripe/webhook', {
+    const request = new NextRequest('https://vimens.app/api/stripe/webhook', {
       method: 'POST',
       headers: {
         'stripe-signature': `t=${Math.floor(Date.now() / 1000)},v1=test`,
@@ -2193,7 +2209,7 @@ describe('billing webhook', () => {
 
     const { POST } = await import('@/app/api/stripe/webhook/route');
 
-    const request = new NextRequest('https://memoriza.app/api/stripe/webhook', {
+    const request = new NextRequest('https://vimens.app/api/stripe/webhook', {
       method: 'POST',
       headers: {
         'stripe-signature': `t=${Math.floor(Date.now() / 1000)},v1=test`,
@@ -2249,7 +2265,7 @@ describe('billing webhook', () => {
 
     const { POST } = await import('@/app/api/stripe/webhook/route');
 
-    const request = new NextRequest('https://memoriza.app/api/stripe/webhook', {
+    const request = new NextRequest('https://vimens.app/api/stripe/webhook', {
       method: 'POST',
       headers: {
         'stripe-signature': `t=${Math.floor(Date.now() / 1000)},v1=test`,

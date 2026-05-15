@@ -2,14 +2,15 @@ import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
 import { trackServer } from '@/lib/analytics/server-tracker'
+import { activateBetaInviteForUser } from '@/lib/beta/invites'
+import { getSupabaseAdmin } from '@/lib/supabase/admin'
 
-// ============================================================================
-// SECURITY: Safe redirect validation to prevent open redirect attacks
-// ============================================================================
 const SAFE_REDIRECT_PREFIXES = [
+  '/admin',
   '/dashboard',
   '/estudar',
   '/decks',
+  '/redefinir-senha',
   '/simulado',
   '/upgrade',
   '/email-confirmado',
@@ -17,61 +18,110 @@ const SAFE_REDIRECT_PREFIXES = [
 ];
 
 function isSafeRedirect(url: string): boolean {
-  // Must be a relative path starting with /
   if (!url.startsWith('/')) return false;
-  // Must not be a protocol-relative URL (//evil.com)
   if (url.startsWith('//')) return false;
-  // Must match one of the allowed prefixes
   return SAFE_REDIRECT_PREFIXES.some(prefix => url.startsWith(prefix));
 }
 
-export async function GET(request: NextRequest) {
-  const requestUrl = new URL(request.url)
-  const code = requestUrl.searchParams.get('code')
-  const type = requestUrl.searchParams.get('type')
-  const nextParam = requestUrl.searchParams.get('next') ?? '/dashboard'
-  
-  // SECURITY: Validate redirect to prevent open redirect attacks
-  const next = isSafeRedirect(nextParam) ? nextParam : '/dashboard'
+function resolveNextPath(requestUrl: URL, type: 'signup' | 'email' | 'recovery' | 'invite' | null) {
+  const flow = requestUrl.searchParams.get('flow');
+  const requestedNext = requestUrl.searchParams.get('next');
+  const defaultNext = type === 'recovery' || flow === 'recovery'
+    ? '/redefinir-senha'
+    : '/dashboard';
+  const next = requestedNext ?? defaultNext;
 
-  if (code) {
-    const supabase = await createClient()
-    const { data, error } = await supabase.auth.exchangeCodeForSession(code)
-    
-    if (!error && data.user) {
-      // Para login com OAuth (Google), verifica/cria profile
-      const { data: existingProfile } = await supabase
-        .from('profiles')
-        .select('id')
-        .eq('id', data.user.id)
-        .single()
-      
-      // Se não tem profile, cria um novo (primeiro login com Google)
-      if (!existingProfile) {
-        const now = Date.now()
-        await supabase.from('profiles').insert({
-          id: data.user.id,
-          is_pro: false,
-          created_at: now,
-          updated_at: now,
-        })
-        console.log('[Auth] Profile criado para usuário Google:', data.user.email)
-      }
-      
-      // If this was an email confirmation, redirect to confirmation success page
-      if (type === 'signup' || type === 'email') {
-        trackServer('email_confirmed', data.user.id, { method: type });
-        return NextResponse.redirect(new URL('/email-confirmado', request.url))
-      }
-      
-      // Otherwise redirect to dashboard or next page
-      return NextResponse.redirect(new URL(next, request.url))
-    }
-    
-    console.error('[Auth] Erro no callback:', error?.message)
-  }
-
-  // If something went wrong, redirect to login with error
-  return NextResponse.redirect(new URL('/login?error=callback', request.url))
+  return isSafeRedirect(next) ? next : defaultNext;
 }
 
+function getErrorRedirectPath(requestUrl: URL, type: 'signup' | 'email' | 'recovery' | 'invite' | null) {
+  const flow = requestUrl.searchParams.get('flow');
+
+  if (type === 'recovery' || flow === 'recovery') {
+    return '/redefinir-senha?error=reset_link_invalid';
+  }
+
+  return '/login?error=callback';
+}
+
+async function ensureProfileExists(userId: string, email?: string | null) {
+  const supabase = await createClient();
+  const { data: existingProfile } = await supabase
+    .from('profiles')
+    .select('id')
+    .eq('id', userId)
+    .single();
+
+  if (!existingProfile) {
+    const now = Date.now();
+    await supabase.from('profiles').insert({
+      id: userId,
+      is_pro: false,
+      created_at: now,
+      updated_at: now,
+    });
+    console.log('[Auth] Profile criado para usuario:', email);
+  }
+
+  if (email) {
+    try {
+      await activateBetaInviteForUser({
+        admin: getSupabaseAdmin(),
+        userId,
+        email,
+      });
+    } catch (error) {
+      console.error('[Auth] Falha ao sincronizar acesso beta:', error);
+    }
+  }
+}
+
+export async function GET(request: NextRequest) {
+  const requestUrl = new URL(request.url);
+  const code = requestUrl.searchParams.get('code');
+  const type = requestUrl.searchParams.get('type') as 'signup' | 'email' | 'recovery' | 'invite' | null;
+  const tokenHash = requestUrl.searchParams.get('token_hash');
+  const next = resolveNextPath(requestUrl, type);
+  const errorRedirect = getErrorRedirectPath(requestUrl, type);
+
+  if (tokenHash && type) {
+    const supabase = await createClient();
+    const { data, error } = await supabase.auth.verifyOtp({
+      token_hash: tokenHash,
+      type,
+    });
+
+    if (!error && data.user) {
+      if (type === 'signup' || type === 'email') {
+        await ensureProfileExists(data.user.id, data.user.email);
+        trackServer('email_confirmed', data.user.id, { method: type });
+        return NextResponse.redirect(new URL('/email-confirmado', request.url));
+      }
+
+      await ensureProfileExists(data.user.id, data.user.email);
+      return NextResponse.redirect(new URL(next, request.url));
+    }
+
+    console.error('[Auth] Erro ao verificar token:', error?.message);
+  }
+
+  if (code) {
+    const supabase = await createClient();
+    const { data, error } = await supabase.auth.exchangeCodeForSession(code);
+
+    if (!error && data.user) {
+      if (type === 'signup' || type === 'email') {
+        await ensureProfileExists(data.user.id, data.user.email);
+        trackServer('email_confirmed', data.user.id, { method: type });
+        return NextResponse.redirect(new URL('/email-confirmado', request.url));
+      }
+
+      await ensureProfileExists(data.user.id, data.user.email);
+      return NextResponse.redirect(new URL(next, request.url));
+    }
+
+    console.error('[Auth] Erro no callback:', error?.message);
+  }
+
+  return NextResponse.redirect(new URL(errorRedirect, request.url));
+}

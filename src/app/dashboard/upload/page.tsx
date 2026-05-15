@@ -49,6 +49,17 @@ const Icons = {
 
 type Step = 'upload' | 'processing' | 'complete';
 
+interface ExtractedSlide {
+  slideNumber: number;
+  title: string;
+  body: string;
+}
+
+interface ExtractDocumentResult {
+  text: string;
+  slides?: ExtractedSlide[];
+}
+
 export default function UploadPage() {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -60,6 +71,7 @@ export default function UploadPage() {
   // File state
   const [file, setFile] = useState<File | null>(null);
   const [pdfText, setPdfText] = useState<string>('');
+  const [extractedSlides, setExtractedSlides] = useState<ExtractedSlide[] | null>(null);
   const [extracting, setExtracting] = useState(false);
   
   // Processing state
@@ -175,11 +187,24 @@ export default function UploadPage() {
   };
 
   // Process source locally via API
-  const processSourceLocally = async (sourceId: string, extractedText: string): Promise<void> => {
+  const processSourceLocally = async (
+    sourceId: string,
+    extractedText: string,
+    slides?: ExtractedSlide[] | null,
+  ): Promise<void> => {
+    const body: { sourceId: string; extractedText: string; slides?: ExtractedSlide[] } = {
+      sourceId,
+      extractedText,
+    };
+    // Forward slide structure for semantic chunking in /api/process-source
+    if (slides && slides.length > 0) {
+      body.slides = slides;
+    }
+
     const response = await fetch('/api/process-source', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sourceId, extractedText }),
+      body: JSON.stringify(body),
     });
     
     const data = await response.json();
@@ -191,7 +216,7 @@ export default function UploadPage() {
     console.log('[upload] Processing result:', data);
   };
 
-  const extractTextFromDocument = async (docFile: File): Promise<string> => {
+  const extractTextFromDocument = async (docFile: File): Promise<ExtractDocumentResult> => {
     const formData = new FormData();
     formData.append('file', docFile);
     
@@ -206,7 +231,7 @@ export default function UploadPage() {
     }
     
     const data = await response.json();
-    return data.text;
+    return { text: data.text, slides: data.slides };
   };
 
   const handleFileSelect = async (selectedFile: File) => {
@@ -228,13 +253,15 @@ export default function UploadPage() {
     setExtracting(true);
     
     try {
-      const text = await extractTextFromDocument(selectedFile);
-      setPdfText(text);
+      const result = await extractTextFromDocument(selectedFile);
+      setPdfText(result.text);
+      setExtractedSlides(result.slides ?? null);
       setExtracting(false);
     } catch (error) {
       console.error('Error extracting document:', error);
       alert('Erro ao ler o documento. Tente outro arquivo.');
       setFile(null);
+      setExtractedSlides(null);
       setExtracting(false);
     }
   };
@@ -267,7 +294,8 @@ export default function UploadPage() {
       setStatusMessage('Processando texto do documento...');
       
       // 3. Process locally (create chunks)
-      await processSourceLocally(sourceId, pdfText);
+      // Pass slides for semantic chunking of PPTX documents
+      await processSourceLocally(sourceId, pdfText, extractedSlides);
       setProgress(100);
       setStatusMessage('Documento processado com sucesso!');
       
@@ -513,6 +541,7 @@ export default function UploadPage() {
                       e.stopPropagation();
                       setFile(null);
                       setPdfText('');
+                      setExtractedSlides(null);
                     }}
                     style={{
                       marginTop: 16,

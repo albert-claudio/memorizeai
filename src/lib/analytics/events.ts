@@ -9,6 +9,7 @@ export const ALLOWED_ANALYTICS_EVENTS = [
   'upload_complete',
   'run_created',
   'run_completed',
+  'notification_created',
   'upgrade_view',
   'checkout_click',
   'checkout_complete',

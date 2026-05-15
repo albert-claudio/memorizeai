@@ -1,16 +1,33 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import { hasProAccess } from '@/lib/billing/pro-access';
+import { getEffectiveProAccess } from '@/lib/billing/effective-pro-access';
 import { checkRunEntitlement } from '@/lib/billing/run-entitlement';
+import { getStudyGoalProfile } from '@/lib/study-goal-profiles';
+import { getStudyGoalByUserId } from '@/lib/study-goal/get-study-goal';
+import { isSafeEntityId } from '@/lib/security/input-validation';
+import { captureApiError, setSentryUser } from '@/lib/sentry';
+import type { RunObjective, ModelPreference, Banca, Dificuldade } from '@/lib/types';
+import { triggerRunDispatch } from '@/lib/queue/trigger-run-dispatch';
 
-// Generate cryptographically secure random ID
+// ============================================================================
+// SHARED RUN-CREATION LOGIC
+// ============================================================================
+// This is the same pipeline used by the createRun server action.
+// The POST handler below delegates to it directly so there is ONE code path.
+// ============================================================================
+
 function generateId() {
   return crypto.randomUUID();
 }
 
 /**
  * POST /api/runs
- * Create a new AI generation run and trigger the orchestrator
+ *
+ * REST-compatible run creation endpoint.
+ * Delegates to the SAME pipeline as the createRun server action:
+ *   insert row as 'queued' → try immediate dispatch → cron acts as backstop.
+ *
+ * Kept for REST API compatibility. The UI uses the server action directly.
  */
 export async function POST(request: NextRequest) {
   try {
@@ -39,9 +56,19 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
     }
 
+    setSentryUser({ id: user.id, email: user.email });
+
     // Now parse and validate body
     const body = await request.json();
-    const { sourceId, objective, modelPreference = 'auto', targetCount = 10, deckId } = body;
+    const {
+      sourceId,
+      objective,
+      modelPreference = 'auto',
+      targetCount = 10,
+      deckId,
+      banca,
+      dificuldade,
+    } = body;
 
     // Validate required fields
     if (!sourceId || !objective) {
@@ -51,11 +78,25 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    if (!isSafeEntityId(sourceId)) {
+      return NextResponse.json(
+        { error: 'Invalid sourceId format' },
+        { status: 400 }
+      );
+    }
+
+    if (deckId != null && !isSafeEntityId(deckId)) {
+      return NextResponse.json(
+        { error: 'Invalid deckId format' },
+        { status: 400 }
+      );
+    }
+
     // Validate objective
-    const validObjectives = ['flashcards', 'questoes_banca', 'logica_juridica'];
+    const validObjectives: RunObjective[] = ['flashcards', 'questoes_banca', 'exercicios_aplicados'];
     if (!validObjectives.includes(objective)) {
       return NextResponse.json(
-        { error: 'Invalid objective. Must be: flashcards, questoes_banca, or logica_juridica' },
+        { error: 'Invalid objective. Must be: flashcards, questoes_banca, or exercicios_aplicados' },
         { status: 400 }
       );
     }
@@ -63,18 +104,20 @@ export async function POST(request: NextRequest) {
     // ================================================================
     // ENTITLEMENT CHECK (tier + monthly limits)
     // ================================================================
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('is_pro, subscription_status, subscription_period_end, admin_override_pro')
-      .eq('id', user.id)
-      .single();
-
-    const isPro = hasProAccess(profile);
-
     const adminSupabase = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
       process.env.SUPABASE_SERVICE_ROLE_KEY!,
     );
+    const isPro = await getEffectiveProAccess(adminSupabase, user.id);
+
+    const studyGoal = await getStudyGoalByUserId(adminSupabase, user.id);
+    const studyProfile = getStudyGoalProfile(studyGoal);
+    if (!studyProfile.allowedObjectives.includes(objective)) {
+      return NextResponse.json(
+        { error: `Objective "${objective}" not allowed for study goal ${studyGoal}` },
+        { status: 400 },
+      );
+    }
 
     const entitlement = await checkRunEntitlement(
       adminSupabase, user.id, isPro, objective, targetCount,
@@ -132,64 +175,68 @@ export async function POST(request: NextRequest) {
       validatedDeckId = deck.id;
     }
 
-    // Create the run using service role client
-    const supabaseAdmin = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.SUPABASE_SERVICE_ROLE_KEY!
-    );
+    // ================================================================
+    // BANCA / DIFICULDADE VALIDATION (same as createRun server action)
+    // ================================================================
+    const VALID_BANCAS: Banca[] = ['FCC', 'FGV', 'CESPE'];
+    const VALID_DIFICULDADES: Dificuldade[] = ['facil', 'medio', 'dificil', 'muito_dificil'];
 
+    const safeBanca = objective === 'questoes_banca' && banca && VALID_BANCAS.includes(banca)
+      ? banca
+      : null;
+    const safeDificuldade = objective === 'questoes_banca' && dificuldade && VALID_DIFICULDADES.includes(dificuldade)
+      ? dificuldade
+      : null;
+
+    // ================================================================
+    // CREATE RUN — enqueue as 'queued', dispatcher handles processing
+    // ================================================================
     const now = Date.now();
     const runId = generateId();
 
-    const { error: insertError } = await supabaseAdmin
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const runPayload: Record<string, any> = {
+      id: runId,
+      user_id: user.id,
+      source_id: sourceId,
+      deck_id: validatedDeckId,
+      objective,
+      model_preference: modelPreference as ModelPreference,
+      target_count: validatedTargetCount,
+      status: 'queued',
+      attempt_count: 0,
+      provider_attempt_count: 0,
+      items_generated: 0,
+      next_attempt_at: now,
+      created_at: now,
+      updated_at: now,
+    };
+    if (safeBanca) runPayload.banca = safeBanca;
+    if (safeDificuldade) runPayload.dificuldade = safeDificuldade;
+
+    const { error: insertError } = await adminSupabase
       .from('runs')
-      .insert({
-        id: runId,
-        user_id: user.id,
-        source_id: sourceId,
-        deck_id: validatedDeckId,
-        objective,
-        model_preference: modelPreference,
-        target_count: validatedTargetCount,
-        status: 'pendente',
-        attempt_count: 0,
-        items_generated: 0,
-        created_at: now,
-        updated_at: now,
-      });
+      .insert(runPayload);
 
     if (insertError) {
-      console.error('[API /runs] Insert error:', insertError);
+      captureApiError(insertError, { route: '/api/runs', userId: user.id, tags: { action: 'insert_run' } });
       return NextResponse.json(
         { error: 'Failed to create run' },
         { status: 500 }
       );
     }
 
-    // Trigger the Edge Function
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-
-    // Fire and forget - don't wait for the edge function
-    fetch(`${supabaseUrl}/functions/v1/run-orchestrator`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${serviceRoleKey}`,
-      },
-      body: JSON.stringify({ runId }),
-    }).catch(err => {
-      console.error('[API /runs] Failed to trigger edge function:', err);
-    });
+    console.log(`[/api/runs POST] Run ${runId} enqueued (status=queued)`);
+    triggerRunDispatch(runId);
 
     return NextResponse.json({
       success: true,
       runId,
-      message: 'Run created and processing started',
+      message: 'Run created and dispatched for processing',
     });
 
   } catch (error) {
-    console.error('[API /runs] Error:', error);
+    captureApiError(error, { route: '/api/runs', tags: { method: 'POST' } });
     return NextResponse.json(
       { error: 'Internal server error' },
       { status: 500 }
@@ -240,14 +287,14 @@ export async function GET(request: NextRequest) {
       .limit(limit);
 
     if (error) {
-      console.error('[API /runs GET] Error:', error);
+      captureApiError(error, { route: '/api/runs', userId: user.id, tags: { method: 'GET' } });
       return NextResponse.json({ error: 'Failed to fetch runs' }, { status: 500 });
     }
 
     return NextResponse.json({ runs: runs || [] });
 
   } catch (error) {
-    console.error('[API /runs GET] Error:', error);
+    captureApiError(error, { route: '/api/runs', tags: { method: 'GET' } });
     return NextResponse.json(
       { error: 'Internal server error' },
       { status: 500 }

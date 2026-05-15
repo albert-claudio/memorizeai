@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
@@ -189,6 +189,14 @@ export default function LoginPage() {
   const [emailNotConfirmed, setEmailNotConfirmed] = useState(false);
   const [resendLoading, setResendLoading] = useState(false);
   const [resendSuccess, setResendSuccess] = useState(false);
+  const [csrfToken, setCsrfToken] = useState('');
+
+  useEffect(() => {
+    fetch('/api/auth/csrf')
+      .then((res) => res.json())
+      .then((data) => setCsrfToken(data.token ?? ''))
+      .catch(() => setCsrfToken(''));
+  }, []);
 
   const handleResendConfirmation = async () => {
     setResendLoading(true);
@@ -221,19 +229,23 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      const supabase = createClient();
-      const { error } = await supabase.auth.signInWithPassword({
-        email,
-        password,
+      const response = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-csrf-token': csrfToken,
+        },
+        body: JSON.stringify({ email, password }),
       });
+      const data = await response.json().catch(() => ({}));
 
-      if (error) {
-        if (error.message.includes('Invalid login credentials')) {
-          setError('E-mail ou senha incorretos.');
-        } else if (error.message.includes('Email not confirmed')) {
+      if (!response.ok) {
+        if (data.code === 'EMAIL_NOT_CONFIRMED' || data.error === 'Email not confirmed') {
           setEmailNotConfirmed(true);
+        } else if (response.status === 401) {
+          setError('E-mail ou senha incorretos.');
         } else {
-          setError(error.message);
+          setError(data.error || 'Erro ao fazer login. Tente novamente.');
         }
         return;
       }

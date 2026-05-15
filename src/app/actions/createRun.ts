@@ -4,59 +4,22 @@ import { createServerClient } from '@supabase/ssr';
 import { createClient } from '@supabase/supabase-js';
 import { cookies } from 'next/headers';
 import type { RunObjective, ModelPreference, Banca, Dificuldade } from '@/lib/types';
-import { hasProAccess } from '@/lib/billing/pro-access';
+import { getEffectiveProAccess } from '@/lib/billing/effective-pro-access';
 import { trackServer } from '@/lib/analytics/server-tracker';
+import { getStudyGoalProfile } from '@/lib/study-goal-profiles';
+import { getStudyGoalByUserId } from '@/lib/study-goal/get-study-goal';
+import { isSafeEntityId } from '@/lib/security/input-validation';
 import {
   checkRunEntitlement,
   getMonthlyRunCounts,
   buildMonthlyUsage,
   type MonthlyUsage,
 } from '@/lib/billing/run-entitlement';
+import { triggerRunDispatch } from '@/lib/queue/trigger-run-dispatch';
 
 // Generate cryptographically secure random ID
 function generateId() {
   return crypto.randomUUID();
-}
-
-function getRunProcessInternalSecret(): string | null {
-  return process.env.RUNS_PROCESS_INTERNAL_SECRET?.trim() || null;
-}
-
-const MAX_TRIGGER_ATTEMPTS = 3;
-const INITIAL_BACKOFF_MS = 200;
-
-/**
- * Fire-and-forget trigger with exponential backoff.
- * If all attempts fail, the run stays 'pendente' and the recovery cron picks it up.
- */
-function triggerProcessWithRetry(
-  baseUrl: string,
-  runId: string,
-  secret: string
-): void {
-  const attempt = async (n: number) => {
-    try {
-      const res = await fetch(`${baseUrl}/api/runs/process`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-internal-secret': secret,
-        },
-        body: JSON.stringify({ runId }),
-      });
-      if (!res.ok && n < MAX_TRIGGER_ATTEMPTS) {
-        throw new Error(`HTTP ${res.status}`);
-      }
-    } catch (err) {
-      if (n < MAX_TRIGGER_ATTEMPTS) {
-        const delay = INITIAL_BACKOFF_MS * Math.pow(2, n - 1);
-        await new Promise(r => setTimeout(r, delay));
-        return attempt(n + 1);
-      }
-      console.error(`[createRun] All ${MAX_TRIGGER_ATTEMPTS} trigger attempts failed for run ${runId}:`, err);
-    }
-  };
-  attempt(1).catch(() => {});
 }
 
 /**
@@ -98,20 +61,11 @@ export async function getMonthlyUsage(): Promise<MonthlyUsage | null> {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return null;
 
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('is_pro, subscription_status, subscription_period_end, admin_override_pro')
-    .eq('id', user.id)
-    .single();
-
-  const isPro = hasProAccess(profile);
-
-  // Use service role to count runs (RLS would filter by user anyway, but
-  // server actions run with the user's session so this is fine)
   const adminSupabase = createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.SUPABASE_SERVICE_ROLE_KEY!,
   );
+  const isPro = await getEffectiveProAccess(adminSupabase, user.id);
   const counts = await getMonthlyRunCounts(adminSupabase, user.id);
 
   return buildMonthlyUsage(isPro, counts);
@@ -121,7 +75,7 @@ export async function getMonthlyUsage(): Promise<MonthlyUsage | null> {
  * Create a new AI generation run
  * 
  * @param sourceId - The source (PDF) to generate content from
- * @param objective - Type of content to generate: flashcards, questoes_banca, or logica_juridica
+ * @param objective - Type of content to generate: flashcards, questoes_banca, or exercicios_aplicados
  * @param modelPreference - Which AI model to prefer: groq, gemini, or auto
  * @param targetCount - How many items to generate (default 10)
  * @param deckId - Optional existing deck to add cards to
@@ -136,14 +90,6 @@ export async function createRun(
   dificuldade?: Dificuldade | null,
 ): Promise<CreateRunResult> {
   try {
-    const runProcessSecret = getRunProcessInternalSecret();
-    if (!runProcessSecret) {
-      return {
-        success: false,
-        error: 'Configuraçao interna ausente para processamento de runs.',
-      };
-    }
-
     const supabase = await createSupabaseServer();
     
     // 1. Validate user
@@ -151,20 +97,30 @@ export async function createRun(
     if (!user) {
       return { success: false, error: 'Usuário não autenticado' };
     }
+
+    if (!isSafeEntityId(sourceId)) {
+      return { success: false, error: 'Formato de sourceId inválido' };
+    }
+
+    if (deckId != null && !isSafeEntityId(deckId)) {
+      return { success: false, error: 'Formato de deckId inválido' };
+    }
     
-    // 2. Entitlement check (tier + monthly limits)
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('is_pro, subscription_status, subscription_period_end, admin_override_pro')
-      .eq('id', user.id)
-      .single();
-
-    const isPro = hasProAccess(profile);
-
     const adminSupabase = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
       process.env.SUPABASE_SERVICE_ROLE_KEY!,
     );
+    const isPro = await getEffectiveProAccess(adminSupabase, user.id);
+
+    const studyGoal = await getStudyGoalByUserId(adminSupabase, user.id);
+    const studyProfile = getStudyGoalProfile(studyGoal);
+    if (!studyProfile.allowedObjectives.includes(objective)) {
+      return {
+        success: false,
+        error: `Objetivo "${objective}" não permitido para o perfil ${studyProfile.label}`,
+      };
+    }
+
     const entitlement = await checkRunEntitlement(
       adminSupabase, user.id, isPro, objective, targetCount,
     );
@@ -207,7 +163,7 @@ export async function createRun(
       validatedDeckId = deck.id;
     }
     
-    // 4. Create the run
+    // 4. Create the run — enqueue instead of fire-and-forget
     const now = Date.now();
     const runId = generateId();
     
@@ -236,9 +192,11 @@ export async function createRun(
       objective,
       model_preference: modelPreference,
       target_count: validatedTargetCount,
-      status: 'pendente',
+      status: 'queued',
       attempt_count: 0,
+      provider_attempt_count: 0,
       items_generated: 0,
+      next_attempt_at: now,
       created_at: now,
       updated_at: now,
     };
@@ -254,12 +212,10 @@ export async function createRun(
       return { success: false, error: 'Erro ao criar run' };
     }
     
-    // 5. Trigger the local API processor (fire-and-forget with retry)
-    const { getBaseUrl } = await import('@/lib/url');
-    const baseUrl = getBaseUrl();
-    console.log(`[createRun] Triggering processor for run ${runId} (up to ${MAX_TRIGGER_ATTEMPTS} attempts)`);
-    triggerProcessWithRetry(baseUrl, runId, runProcessSecret);
+    // 5. Track and opportunistic dispatch
     trackServer('run_created', user.id, { runId, objective });
+    console.log(`[createRun] Run ${runId} enqueued (status=queued)`);
+    triggerRunDispatch(runId);
     
     return { success: true, runId };
     
@@ -347,7 +303,7 @@ export async function cancelRun(runId: string): Promise<{ success: boolean; erro
     })
     .eq('id', runId)
     .eq('user_id', user.id)
-    .eq('status', 'pendente'); // Can only cancel pending runs
+    .in('status', ['pendente', 'queued', 'retry_wait']); // Can only cancel queued retryable runs
   
   if (error) {
     return { success: false, error: 'Não foi possível cancelar a run' };

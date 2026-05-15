@@ -2,6 +2,8 @@
 
 import Groq from 'groq-sdk';
 import { createClient } from '@/lib/supabase/server';
+import { getStudyGoalProfile, detectContentType as detectContentArea, buildSystemPromptWithCitations, type StudyGoalProfile } from '@/lib/study-goal-profiles';
+import { getStudyGoal } from '@/lib/study-goal/get-study-goal';
 
 const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY,
@@ -31,36 +33,7 @@ export interface FlashcardWithCitation {
   citationExcerpt: string;
 }
 
-// System message with citation requirement
-const SYSTEM_MESSAGE_WITH_CITATIONS = `Você é um professor de Direito com 20 anos de experiência, especialista em criar flashcards para concursos públicos e OAB.
-
-REGRAS ABSOLUTAS:
-1. CRIE FLASHCARDS APENAS com informações do texto fornecido
-2. NUNCA invente informações que não estejam no texto
-3. SEMPRE cite o trecho de origem usando o ID fornecido
-4. Para cada card, indique qual TRECHO usou como fonte
-5. Inclua um RECORTE CURTO (1-2 frases) que comprova a resposta
-6. Respostas devem ser completas mas objetivas (máximo 4 frases)
-7. Perguntas devem ser específicas e testar compreensão
-
-CATEGORIAS VÁLIDAS:
-- "conceito": Definições e princípios jurídicos
-- "artigo": Artigos de lei específicos  
-- "jurisprudencia": Súmulas e entendimentos de tribunais
-- "procedimento": Ritos e procedimentos processuais
-- "prazo": Prazos processuais e prescricionais
-- "geral": Outros conteúdos relevantes
-
-FORMATO DE RESPOSTA OBRIGATÓRIO (JSON):
-[{
-  "front": "pergunta sobre o texto",
-  "back": "resposta baseada no texto",
-  "category": "conceito",
-  "chunkId": "ID do trecho usado",
-  "citationExcerpt": "Frase curta do texto original que comprova a resposta"
-}]
-
-Responda APENAS com JSON válido, nada mais.`;
+// System message is now dynamically built from the study goal profile
 
 /**
  * Format chunks with context for the AI prompt
@@ -78,28 +51,10 @@ ${chunk.content}
 }
 
 /**
- * Detect content type for better prompt context
+ * Detect content type using study goal profile
  */
-function detectContentType(text: string): string {
-  const patterns = {
-    constitucional: /constituição|constitucional|art\.\s*5|direitos fundamentais|cf\/88/gi,
-    civil: /código civil|cc\/2002|obrigações|contratos|responsabilidade civil/gi,
-    penal: /código penal|cp|crime|pena|tipicidade|antijuridicidade/gi,
-    trabalhista: /clt|trabalhista|empregado|empregador|súmula.*tst/gi,
-    processual: /cpc|cpp|processo|recurso|ação|petição|contestação/gi,
-    administrativo: /administração pública|ato administrativo|licitação|servidor/gi,
-    tributario: /tributo|imposto|taxa|contribuição|crédito tributário/gi,
-  };
-  
-  const matches: Record<string, number> = {};
-  
-  for (const [area, regex] of Object.entries(patterns)) {
-    const found = text.match(regex);
-    matches[area] = found ? found.length : 0;
-  }
-  
-  const bestMatch = Object.entries(matches).sort((a, b) => b[1] - a[1])[0];
-  return bestMatch && bestMatch[1] > 2 ? bestMatch[0] : 'geral';
+function detectContentType(text: string, profile: StudyGoalProfile): string {
+  return detectContentArea(text, profile);
 }
 
 /**
@@ -160,21 +115,26 @@ export async function generateFlashcardsWithCitations(
   if (chunks.length === 0) {
     throw new Error('Nenhum chunk fornecido para geração');
   }
+
+  // Load study goal profile
+  const studyGoal = await getStudyGoal();
+  const profile = getStudyGoalProfile(studyGoal);
+  const SYSTEM_MESSAGE_WITH_CITATIONS = buildSystemPromptWithCitations(profile);
   
   const fullText = chunks.map(c => c.content).join('\n');
-  const contentType = detectContentType(fullText);
+  const contentType = detectContentType(fullText, profile);
   const formattedChunks = formatChunksForPrompt(chunks);
   const validChunkIds = new Set(chunks.map(c => c.id));
   
   // Build chunk ID to metadata map
   const chunkMetadata = new Map(chunks.map(c => [c.id, { pageNumber: c.pageNumber }]));
   
-  console.log(`[AI-Citations] Gerando flashcards com citações - ${chunks.length} chunks, Área: ${contentType}`);
+  console.log(`[AI-Citations] Gerando flashcards com citações - Goal: ${studyGoal}, ${chunks.length} chunks, Área: ${contentType}`);
   
-  const userPrompt = `Leia os trechos de um documento jurídico abaixo e crie flashcards de estudo.
+  const userPrompt = `Leia os trechos de um ${profile.textLabel} abaixo e crie flashcards de estudo.
 Cada trecho tem um ID único que você DEVE usar para citar a fonte.
 
-ÁREA DO DIREITO: ${contentType.toUpperCase()}
+ÁREA: ${contentType.toUpperCase()}
 
 INSTRUÇÕES:
 - Crie entre 10 e 20 flashcards
@@ -260,9 +220,8 @@ JSON:`;
       const metadata = chunkMetadata.get(card.chunkId);
       card.pageNumber = metadata?.pageNumber ?? null;
       
-      // Normalize category
-      const validCategories = ['conceito', 'artigo', 'jurisprudencia', 'procedimento', 'prazo', 'geral'];
-      if (!card.category || !validCategories.includes(card.category)) {
+      // Normalize category using profile
+      if (!card.category || !profile.categoryKeys.includes(card.category)) {
         card.category = 'geral';
       }
       

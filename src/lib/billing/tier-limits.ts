@@ -1,5 +1,5 @@
 import { createClient } from '@/lib/supabase/server';
-import { hasProAccess } from '@/lib/billing/pro-access';
+import { getEffectiveProAccess } from '@/lib/billing/effective-pro-access';
 
 // ============================================================================
 // TIER LIMITS CONFIGURATION
@@ -86,15 +86,7 @@ export async function getWeeklyUploadCount(userId: string): Promise<number> {
 export async function getUserTierLimits(userId: string): Promise<TierLimits> {
   const supabase = await createClient();
 
-  // Get user profile to check if pro
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('is_pro, subscription_status, subscription_period_end, admin_override_pro')
-    .eq('id', userId)
-    .single();
-
-  // Check if user is actively subscribed
-  const isPro = hasProAccess(profile);
+  const isPro = await getEffectiveProAccess(supabase, userId);
 
   const tier: UserTier = isPro ? 'pro' : 'free';
   const limits = TIER_LIMITS[tier];

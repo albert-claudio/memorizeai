@@ -1,6 +1,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
+import * as Sentry from '@sentry/nextjs';
 import type { Card, Deck } from '@/lib/types';
 import { 
   processReview, 
@@ -76,11 +77,10 @@ export function useStudySession(deckId: string, userId: string | undefined, isPr
       try {
         setLoading(true);
 
-        // Load settings + weights + deck in parallel (before any calculations)
-        const [settings, userWeights, deckData] = await Promise.all([
+        // Load settings + weights first; review queue is fetched via API with a safe fallback.
+        const [settings, userWeights] = await Promise.all([
           studyService.getUserSettings(userId),
           studyService.getUserWeights(userId),
-          studyService.getDeck(deckId, userId),
         ]);
 
         // Build FSRSConfig once, before any interval calculations
@@ -92,30 +92,48 @@ export function useStudySession(deckId: string, userId: string | undefined, isPr
         };
         setFsrsConfig(config);
 
+        let reviewData: { deck: Deck | null; cards: Card[] };
+
+        try {
+          const queueResponse = await studyService.getReviewQueue(deckId);
+          reviewData = {
+            deck: queueResponse.deck,
+            cards: queueResponse.cards,
+          };
+        } catch (queueError) {
+          console.warn('Review queue API unavailable, falling back to local ordering:', queueError);
+
+          const [fallbackDeck, fallbackCards] = await Promise.all([
+            studyService.getDeck(deckId, userId),
+            studyService.getDueCards(deckId),
+          ]);
+
+          reviewData = {
+            deck: fallbackDeck,
+            cards: sortByPriority(fallbackCards.filter(c => isDue(c.next_review_at, Date.now()))),
+          };
+        }
+
         // Load Deck
-        if (!deckData) {
+        if (!reviewData.deck) {
           router.push('/dashboard');
           return;
         }
-        setDeck(deckData);
+        setDeck(reviewData.deck);
 
         // Load Cards
-        const cardsData = await studyService.getDueCards(deckId);
+        const cardsData = reviewData.cards;
         if (!cardsData || cardsData.length === 0) {
           router.push(`/deck/${deckId}`);
           return;
         }
         setCards(cardsData);
 
-        // Sort Due Cards
-        const now = Date.now();
-        const due = sortByPriority(
-          cardsData.filter(c => isDue(c.next_review_at, now))
-        );
-        setDueCards(due);
+        setDueCards(cardsData);
 
       } catch (err) {
         console.error('Error loading study session:', err);
+        Sentry.captureException(err, { tags: { hook: 'useStudySession', action: 'loadData', deckId } });
       } finally {
         setLoading(false);
       }
@@ -220,6 +238,7 @@ export function useStudySession(deckId: string, userId: string | undefined, isPr
       });
     } catch (err) {
       console.error('Failed to log review:', err);
+      Sentry.captureException(err, { tags: { hook: 'useStudySession', action: 'logReview' } });
     }
     
     // AI Interventions (Pro only)

@@ -2,6 +2,7 @@
 import { forwardRef } from 'react';
 import type { Card } from '@/lib/types';
 import { Icons } from '@/features/deck/components/Icons';
+import { CardSourceBadge } from '@/components/CardSourceBadge';
 
 interface StudyCardProps {
   card: Card;
@@ -87,6 +88,9 @@ export const StudyCard = forwardRef<HTMLDivElement, StudyCardProps>(({
           flexDirection: 'column',
           boxShadow: '0 12px 40px -12px rgba(0,0,0,0.3)',
         }}>
+          <div style={{ position: 'absolute', top: 20, right: 20, zIndex: 2 }}>
+            <CardSourceBadge reference={card.sourceReference} />
+          </div>
           <span style={{ 
             fontSize: 12, 
             fontWeight: 700, 
@@ -137,6 +141,9 @@ export const StudyCard = forwardRef<HTMLDivElement, StudyCardProps>(({
           transform: 'rotateY(180deg)',
           boxShadow: '0 0 0 1px rgba(99, 102, 241, 0.2), 0 20px 50px -10px rgba(0,0,0,0.5)',
         }}>
+          <div style={{ position: 'absolute', top: 20, right: 20, zIndex: 2 }}>
+            <CardSourceBadge reference={card.sourceReference} tone="dark" />
+          </div>
           <span style={{ 
             fontSize: 12, 
             fontWeight: 700, 

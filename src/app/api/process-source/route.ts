@@ -2,6 +2,19 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import crypto from 'crypto';
 import { requireAuth, requireAuthAndOwnership, isAuthSuccess } from '@/lib/auth/auth-guard';
+import { generateAIText, getDefaultModelForProvider } from '@/lib/ai/provider-router';
+import { emitContentReadyNotification } from '@/lib/notifications/emitters';
+import { isSafeEntityId } from '@/lib/security/input-validation';
+import type { AIProvider } from '@/lib/ai/types';
+import {
+  buildFallbackSourceDigestContent,
+  buildSourceDigestRequest,
+  buildSourceDigestRow,
+  normalizeSourceDigestContent,
+  type DigestChunk,
+} from '@/lib/source-digest';
+import { SOURCE_DIGEST_VERSION } from '@/lib/source-digest-prompts';
+import { captureApiError, setSentryUser } from '@/lib/sentry';
 
 export const maxDuration = 120; // 2 minutes timeout
 export const dynamic = 'force-dynamic';
@@ -26,9 +39,26 @@ function normalizeText(text: string): string {
     .trim();
 }
 
+function resolveSourceDigestProvider(): AIProvider | null {
+  const preferred = (process.env.SOURCE_DIGEST_PROVIDER || 'openai').toLowerCase();
+  const candidates = [preferred, 'openai', 'gemini', 'groq'];
+
+  for (const candidate of candidates) {
+    if (candidate === 'openai' && process.env.OPENAI_API_KEY) return 'openai';
+    if (candidate === 'gemini' && process.env.GEMINI_API_KEY) return 'gemini';
+    if (candidate === 'groq' && process.env.GROQ_API_KEY) return 'groq';
+  }
+
+  return null;
+}
+
 // Split text into chunks with overlap
 function chunkText(text: string, chunkSize = 1000, overlap = 100): Array<{ content: string; charStart: number; charEnd: number }> {
   const chunks: Array<{ content: string; charStart: number; charEnd: number }> = [];
+
+  if (!text.trim()) {
+    return chunks;
+  }
   
   if (text.length <= chunkSize) {
     return [{ content: text, charStart: 0, charEnd: text.length }];
@@ -176,6 +206,13 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    if (!isSafeEntityId(sourceId)) {
+      return NextResponse.json(
+        { error: 'Invalid sourceId format' },
+        { status: 400 }
+      );
+    }
+
     // ============================================================
     // SECURITY: Require auth + ownership validation (no Pro gate —
     // upload quota was checked at extract-document step)
@@ -193,7 +230,16 @@ export async function POST(request: NextRequest) {
     // Use service key if available, otherwise use anon key
     const supabase = createClient(supabaseUrl, supabaseServiceKey || supabaseAnonKey);
 
+    const { data: sourceRow } = await supabase
+      .from('sources')
+      .select('filename')
+      .eq('id', sourceId)
+      .single();
+
+    const sourceFilename = sourceRow?.filename ?? 'Seu documento';
+
     console.log(`[process-source] Starting processing for source ${sourceId} by user ${authResult.user.id}`);
+    setSentryUser({ id: authResult.user.id, email: authResult.user.email });
 
     // Update status to processing (processando)
     await supabase
@@ -204,6 +250,22 @@ export async function POST(request: NextRequest) {
     try {
       // Normalize and chunk the text
       const normalizedText = normalizeText(extractedText);
+      if (!normalizedText) {
+        const errorMessage = 'Documento sem conteúdo textual útil para processamento.';
+        await supabase
+          .from('sources')
+          .update({
+            status: 'erro',
+            error_message: errorMessage,
+            updated_at: Date.now(),
+          })
+          .eq('id', sourceId);
+
+        return NextResponse.json(
+          { error: errorMessage, code: 'EMPTY_EXTRACTED_TEXT' },
+          { status: 422 }
+        );
+      }
 
       // Use semantic chunking for PPTX slides, fixed chunking for others
       let chunks: Array<{ content: string; charStart: number; charEnd: number; topic?: string }>;
@@ -217,12 +279,30 @@ export async function POST(request: NextRequest) {
       } else {
         chunks = chunkText(normalizedText, 1000, 100);
       }
+
+      if (chunks.length === 0) {
+        const errorMessage = 'Documento sem conteúdo textual útil para processamento.';
+        await supabase
+          .from('sources')
+          .update({
+            status: 'erro',
+            error_message: errorMessage,
+            updated_at: Date.now(),
+          })
+          .eq('id', sourceId);
+
+        return NextResponse.json(
+          { error: errorMessage, code: 'EMPTY_EXTRACTED_TEXT' },
+          { status: 422 }
+        );
+      }
       
       console.log(`[process-source] Created ${chunks.length} chunks from ${normalizedText.length} chars`);
       
       let processedChunks = 0;
       let reusedChunks = 0;
       const totalChunks = chunks.length;
+      const resolvedChunks: Array<DigestChunk | undefined> = new Array(chunks.length);
 
       // Process chunks in batches for better performance
       const BATCH_SIZE = 10;
@@ -279,6 +359,12 @@ export async function POST(request: NextRequest) {
               created_at: Date.now(),
             });
 
+          resolvedChunks[i] = {
+            id: chunkId,
+            content: chunk.content,
+            position: i,
+            pageNumber: null,
+          };
           processedChunks++;
         }));
 
@@ -290,6 +376,112 @@ export async function POST(request: NextRequest) {
           .eq('id', sourceId);
       }
 
+      let digestGenerated = false;
+      let digestVersion: string | null = null;
+      let digestError: string | null = null;
+
+      if ((process.env.SOURCE_DIGEST_ENABLED || 'true').toLowerCase() !== 'false') {
+        try {
+          const digestProvider = resolveSourceDigestProvider();
+          const digestChunks = resolvedChunks.filter((chunk): chunk is DigestChunk => Boolean(chunk));
+
+          if (digestProvider && digestChunks.length > 0) {
+            const digestModel = process.env.SOURCE_DIGEST_MODEL || getDefaultModelForProvider(digestProvider, 'flashcards');
+            const digestRequest = buildSourceDigestRequest(digestChunks);
+            const digestResult = await generateAIText({
+              provider: digestProvider,
+              model: digestModel,
+              system: digestRequest.system,
+              user: digestRequest.user,
+              promptCacheKey: digestRequest.promptCacheKey,
+              maxOutputTokens: digestRequest.maxOutputTokens,
+            });
+
+            const parsedDigest = JSON.parse(
+              digestResult.text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim()
+            );
+            const normalizedDigest = normalizeSourceDigestContent(parsedDigest);
+
+            if (normalizedDigest.flashcard_context.length > 0) {
+              const digestRow = buildSourceDigestRow({
+                sourceId,
+                provider: digestProvider,
+                model: digestModel,
+                result: digestResult,
+                content: normalizedDigest,
+              });
+
+              const { error: digestInsertError } = await supabase
+                .from('source_digests')
+                .upsert(digestRow, {
+                  onConflict: 'source_id,version',
+                });
+
+              if (digestInsertError) {
+                throw digestInsertError;
+              }
+
+              digestGenerated = true;
+              digestVersion = SOURCE_DIGEST_VERSION;
+            } else {
+              digestError = 'Digest vazio apos normalizacao';
+            }
+          } else {
+            digestError = 'Nenhum provider de digest configurado';
+          }
+        } catch (digestGenerationError) {
+          digestError = digestGenerationError instanceof Error
+            ? digestGenerationError.message
+            : 'Erro desconhecido ao gerar digest';
+          console.error('[process-source] Digest generation error:', digestGenerationError);
+        }
+      }
+
+      if (!digestGenerated) {
+        const fallbackChunks = resolvedChunks.filter((chunk): chunk is DigestChunk => Boolean(chunk));
+        if (fallbackChunks.length > 0) {
+          try {
+            const fallbackDigest = buildFallbackSourceDigestContent(fallbackChunks);
+            if (fallbackDigest.flashcard_context.length > 0) {
+              const { error: fallbackDigestError } = await supabase
+                .from('source_digests')
+                .upsert(
+                  buildSourceDigestRow({
+                    sourceId,
+                    provider: null,
+                    model: null,
+                    result: null,
+                    content: fallbackDigest,
+                  }),
+                  {
+                    onConflict: 'source_id,version',
+                  }
+                );
+
+              if (fallbackDigestError) {
+                throw fallbackDigestError;
+              }
+
+              digestGenerated = true;
+              digestVersion = SOURCE_DIGEST_VERSION;
+              console.warn(
+                `[process-source] Using fallback digest for source ${sourceId}${
+                  digestError ? ` after AI digest failure: ${digestError}` : ''
+                }`
+              );
+            }
+          } catch (fallbackDigestError) {
+            const fallbackMessage = fallbackDigestError instanceof Error
+              ? fallbackDigestError.message
+              : 'Erro desconhecido ao persistir digest fallback';
+            digestError = digestError
+              ? `${digestError}; fallback: ${fallbackMessage}`
+              : fallbackMessage;
+            console.error('[process-source] Fallback digest error:', fallbackDigestError);
+          }
+        }
+      }
+      
       // Mark as completed (concluido)
       await supabase
         .from('sources')
@@ -303,10 +495,33 @@ export async function POST(request: NextRequest) {
       const duration = Date.now() - startTime;
       console.log(`[process-source] Completed in ${duration}ms: ${processedChunks} chunks (${reusedChunks} reused)`);
 
+      await emitContentReadyNotification({
+        userId: authResult.user.id,
+        type: 'content_ready',
+        title: 'Conteúdo processado',
+        body: `${sourceFilename} terminou de ser processado e já pode gerar cards ou questões.`,
+        ctaLabel: 'Abrir gerador',
+        ctaUrl: '/dashboard/runs',
+        metadata: {
+          sourceId,
+          filename: sourceFilename,
+          chunks: processedChunks,
+          reusedChunks,
+          digestGenerated,
+          digestVersion,
+        },
+        dedupeKey: `content-ready:${sourceId}`,
+      }).catch((notificationError) => {
+        console.error('[process-source] Notification error:', notificationError);
+      });
+
       return NextResponse.json({ 
         success: true, 
         chunks: processedChunks,
         reused: reusedChunks,
+        digestGenerated,
+        digestVersion,
+        digestError,
         duration: `${duration}ms`,
         message: `Processado: ${processedChunks} chunks (${reusedChunks} reutilizados)`
       });
@@ -327,6 +542,11 @@ export async function POST(request: NextRequest) {
         .eq('id', sourceId);
 
       console.error('[process-source] Processing error:', processingError);
+      captureApiError(processingError, {
+        route: '/api/process-source',
+        userId: authResult.user.id,
+        tags: { sourceId, action: 'processing' },
+      });
       return NextResponse.json(
         { error: errorMessage },
         { status: 500 }
@@ -334,7 +554,7 @@ export async function POST(request: NextRequest) {
     }
 
   } catch (error) {
-    console.error('[process-source] Request error:', error);
+    captureApiError(error, { route: '/api/process-source', tags: { action: 'request' } });
     return NextResponse.json(
       { error: error instanceof Error ? error.message : 'Unknown error' },
       { status: 500 }

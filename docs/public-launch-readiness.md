@@ -1,8 +1,8 @@
 # Prontidao para Lancamento Publico
 
-Data de referencia: 15 de marco de 2026
+Data de referencia: 10 de abril de 2026
 
-Este documento resume o estado atual do Memoriza para abertura ao publico, com foco em:
+Este documento resume o estado atual da Vimens para abertura ao publico, com foco em:
 
 - o que ja foi validado localmente
 - o que ainda falta em staging/producao
@@ -14,9 +14,9 @@ Status atual: quase pronto para lancamento publico.
 
 O produto ja passou pelas validacoes tecnicas locais mais importantes:
 
-- `npm run lint:ci` passou
+- `npm run lint:ci` passou (corrigido em 2026-03-29: imports e estado mortos removidos)
 - `npm run test` passou
-- `npm run build` passou
+- `npm run build` passou (corrigido em 2026-03-29: Suspense boundary adicionado em /redefinir-senha)
 
 Os principais pontos restantes nao sao mais grandes implementacoes de produto. O que falta agora e:
 
@@ -32,6 +32,8 @@ Os principais pontos restantes nao sao mais grandes implementacoes de produto. O
 - `/api/admin/funnel` usa o mesmo admin guard das outras rotas administrativas
 - `/api/analytics/track` aceita apenas requests same-origin
 - `/api/runs/process` exige `x-internal-secret`
+- `POST /api/runs` agora delega para o mesmo pipeline da server action `createRun` (eliminada divergencia com edge function legada)
+- Edge function `run-orchestrator` removida do codebase (necessario remover do deploy Supabase)
 - checkout Stripe ja valida origins permitidas
 - webhook Stripe possui validacao de assinatura, idempotencia e trilha de auditoria
 - refund automatico dentro da janela de 7 dias foi implementado
@@ -79,8 +81,7 @@ As variaveis abaixo precisam estar configuradas no ambiente de deploy:
 - `RUNS_PROCESS_INTERNAL_SECRET`
 - `QSTASH_CURRENT_SIGNING_KEY`
 - `QSTASH_NEXT_SIGNING_KEY`
-- `ADMIN_EMAILS`
-- `ADMIN_PASSWORD`
+- `SECURITY_ALERT_EMAIL`
 - `UPSTASH_REDIS_REST_URL`
 - `UPSTASH_REDIS_REST_TOKEN`
 - `WEBHOOK_ALERT_URL`
@@ -111,7 +112,7 @@ Sem essa etapa, o build local estar verde nao garante que o ambiente publico est
 
 ## 4. Checagens de seguranca pos-deploy
 
-- Confirmar que rotas admin exigem sessao autenticada e `x-admin-password`.
+- Confirmar que rotas admin exigem sessao autenticada, role admin no JWT, role admin no banco e MFA AAL2.
 - Confirmar que `app_events` rejeita inserts diretos pelo endpoint publico do Supabase.
 - Confirmar que o CSP em producao nao inclui `'unsafe-eval'`.
 - Confirmar que checkout Stripe so aceita origins autorizadas.

@@ -2,6 +2,8 @@ import Stripe from 'stripe';
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { hasProAccess } from '@/lib/billing/pro-access';
+import { getEffectiveProAccess } from '@/lib/billing/effective-pro-access';
+import { activateBetaInviteForUser, hasActiveBetaAccess } from '@/lib/beta/invites';
 import { stripe } from '@/lib/billing/stripe';
 import { createClient as createSupabaseAdmin, type SupabaseClient } from '@supabase/supabase-js';
 
@@ -50,7 +52,12 @@ async function resolveStripeCustomerId(
     return null;
   }
 
-  return latestSubscription?.stripe_customer_id ?? null;
+  const fallbackCustomerId = latestSubscription?.stripe_customer_id ?? null;
+  if (fallbackCustomerId?.startsWith('beta_')) {
+    return null;
+  }
+
+  return fallbackCustomerId;
 }
 
 export async function GET() {
@@ -86,6 +93,7 @@ export async function GET() {
         periodStart: null,
         cancelAtPeriodEnd: false,
         isActive: false,
+        isBeta: false,
         refundEligibleUntil: null,
         refundEligible: false,
       });
@@ -114,6 +122,8 @@ export async function GET() {
 
     let refundEligibleUntil: number | null = null;
     let refundEligible = false;
+    let betaAccess = false;
+    let effectiveAccess: boolean | null = null;
 
     if (process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
       try {
@@ -121,6 +131,17 @@ export async function GET() {
           process.env.NEXT_PUBLIC_SUPABASE_URL,
           process.env.SUPABASE_SERVICE_ROLE_KEY,
         );
+
+        effectiveAccess = await getEffectiveProAccess(supabaseAdmin, user.id);
+        betaAccess = await hasActiveBetaAccess({ admin: supabaseAdmin, userId: user.id, email: user.email });
+        if (betaAccess && user.email) {
+          await activateBetaInviteForUser({
+            admin: supabaseAdmin,
+            userId: user.id,
+            email: user.email,
+          });
+          effectiveAccess = true;
+        }
 
         const stripeCustomerId = await resolveStripeCustomerId(supabaseAdmin, user.id);
         if (stripeCustomerId) {
@@ -162,19 +183,33 @@ export async function GET() {
     // ================================================================
     // 3. CALCULATE IF SUBSCRIPTION IS ACTIVE
     // ================================================================
-    const isActive = hasProAccess(profile);
+    const isActive = betaAccess || (effectiveAccess ?? hasProAccess({
+      ...profile,
+      subscription_status: status,
+      subscription_period_end: periodEnd,
+      cancel_at_period_end: cancelAtPeriodEnd,
+    }));
+    const responseStatus = betaAccess
+      ? 'beta'
+      : isActive
+      ? status
+      : status === 'active' || status === 'past_due'
+        ? 'free'
+        : status;
+    const responseTier = betaAccess ? 'pro' : isActive ? (profile.subscription_tier || 'free') : 'free';
 
     // ================================================================
     // 4. RETURN SUBSCRIPTION STATUS
     // ================================================================
     return NextResponse.json({
       isPro: isActive,
-      status,
-      tier: profile.subscription_tier || 'free',
+      status: responseStatus,
+      tier: responseTier,
       periodStart,
       periodEnd,
       cancelAtPeriodEnd,
       isActive,
+      isBeta: betaAccess,
       refundEligibleUntil,
       refundEligible,
     });

@@ -9,5 +9,15 @@ Sentry.init({
   // Performance monitoring — 10% of server transactions
   tracesSampleRate: 0.1,
 
+  // Enrich events with server context
+  beforeSend(event) {
+    event.tags = {
+      ...event.tags,
+      app: "vimens",
+      runtime: "nodejs",
+    };
+    return event;
+  },
+
   environment: process.env.NODE_ENV,
 });

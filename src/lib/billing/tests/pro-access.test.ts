@@ -41,4 +41,36 @@ describe('hasProAccess', () => {
       })
     ).toBe(false);
   });
+
+  it('returns false for active without period end', () => {
+    expect(
+      hasProAccess({
+        is_pro: true,
+        subscription_status: 'active',
+        subscription_period_end: null,
+      })
+    ).toBe(false);
+  });
+
+  it('returns false when subscription is scheduled not to renew', () => {
+    expect(
+      hasProAccess({
+        is_pro: true,
+        subscription_status: 'active',
+        subscription_period_end: Date.now() + 60_000,
+        cancel_at_period_end: true,
+      })
+    ).toBe(false);
+  });
+
+  it('returns false when only admin override is enabled', () => {
+    expect(
+      hasProAccess({
+        is_pro: false,
+        subscription_status: 'free',
+        subscription_period_end: null,
+        admin_override_pro: true,
+      })
+    ).toBe(false);
+  });
 });

@@ -4,10 +4,10 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 // MONTHLY GENERATION LIMITS
 // ============================================================================
 
-export type RunObjective = 'flashcards' | 'questoes_banca' | 'logica_juridica';
+export type RunObjective = 'flashcards' | 'questoes_banca' | 'exercicios_aplicados';
 
 /** Objectives that count towards the simulado/advanced quota */
-const ADVANCED_OBJECTIVES = new Set<RunObjective>(['questoes_banca', 'logica_juridica']);
+const ADVANCED_OBJECTIVES = new Set<RunObjective>(['questoes_banca', 'exercicios_aplicados']);
 
 export const RUN_LIMITS = {
   free: {
@@ -28,7 +28,7 @@ export const RUN_LIMITS = {
 
 export interface MonthlyRunCounts {
   flashcards: number;
-  simulados: number;   // questoes_banca + logica_juridica
+  simulados: number;   // questoes_banca + exercicios_aplicados
 }
 
 export interface RunAuthResult {
@@ -65,6 +65,10 @@ export function authorizeRunCreation(
   // 1. Sanitize targetCount
   const validatedTargetCount = Math.min(Math.max(1, targetCount), limits.maxTargetCount);
 
+  // Desativado temporariamente: geração ilimitada
+  return { allowed: true, validatedTargetCount };
+
+  /*
   // 2. Check objective permission + monthly quota
   if (ADVANCED_OBJECTIVES.has(objective)) {
     // Advanced objectives (simulados, lógica jurídica)
@@ -96,8 +100,9 @@ export function authorizeRunCreation(
       };
     }
   }
+  */
 
-  return { allowed: true, validatedTargetCount };
+  // return { allowed: true, validatedTargetCount };
 }
 
 // ============================================================================
@@ -132,7 +137,7 @@ export async function getMonthlyRunCounts(
     .gte('created_at', monthStart)
     .in('status', ['pendente', 'processando', 'concluido']);
 
-  // Count advanced runs this month (questoes_banca + logica_juridica)
+  // Count advanced runs this month (questoes_banca + exercicios_aplicados)
   const { count: simuladoCount } = await supabase
     .from('runs')
     .select('id', { count: 'exact', head: true })
@@ -140,7 +145,7 @@ export async function getMonthlyRunCounts(
     .is('deleted_at', null)
     .gte('created_at', monthStart)
     .in('status', ['pendente', 'processando', 'concluido'])
-    .in('objective', ['questoes_banca', 'logica_juridica']);
+    .in('objective', ['questoes_banca', 'exercicios_aplicados']);
 
   return {
     flashcards: flashcardCount ?? 0,

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
+import { isSafeEntityId } from '@/lib/security/input-validation';
 
 export const dynamic = 'force-dynamic';
 
@@ -30,6 +31,13 @@ export async function POST(request: NextRequest) {
     if (!sourceId) {
       return NextResponse.json(
         { error: 'sourceId is required' },
+        { status: 400 }
+      );
+    }
+
+    if (!isSafeEntityId(sourceId)) {
+      return NextResponse.json(
+        { error: 'Invalid sourceId format' },
         { status: 400 }
       );
     }

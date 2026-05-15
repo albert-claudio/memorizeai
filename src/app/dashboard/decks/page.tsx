@@ -213,28 +213,42 @@ function DecksPageInner() {
           <EmptyState onCreateDeck={() => setShowCreateModal(true)} />
         ) : (
           <>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginBottom: 24, background: 'rgba(255,255,255,0.02)', padding: 16, borderRadius: 16, border: '1px solid rgba(255,255,255,0.05)' }}>
-              <div style={{ flex: '1 1 200px' }}>
-                <input type="text" placeholder="Buscar decks..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} style={{ ...inputStyle, width: '100%' } as React.CSSProperties} />
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 16, marginBottom: 32, background: '#1C1C1E', padding: 20, borderRadius: 24, border: '1px solid rgba(255,255,255,0.08)', boxShadow: '0 8px 32px rgba(0,0,0,0.4)' }}>
+              <div style={{ position: 'relative' }}>
+                <div style={{ position: 'absolute', left: 16, top: '50%', transform: 'translateY(-50%)', color: '#a1a1aa', display: 'flex', pointerEvents: 'none' }}>
+                  <Icons.Search />
+                </div>
+                <input type="text" placeholder="Buscar decks..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} style={{ ...inputStyle, width: '100%', paddingLeft: 48, background: '#000000', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 16, height: 56, fontSize: 16, boxShadow: 'inset 0 2px 4px rgba(0,0,0,0.2)' } as React.CSSProperties} />
               </div>
-              <div style={{ flex: '0 1 180px' }}>
-                <select value={filterConcurso} onChange={(e) => setFilterConcurso(e.target.value)} style={{ ...inputStyle, width: '100%', appearance: 'auto', cursor: 'pointer', color: '#f4f4f5' } as React.CSSProperties}>
-                  <option value="Todos" style={{ color: '#000' }}>Todos os Concursos</option>
-                  {uniqueConcursos.map(c => <option key={c} value={c} style={{ color: '#000' }}>{c}</option>)}
-                </select>
-              </div>
-              <div style={{ flex: '0 1 180px' }}>
-                <select value={filterMateria} onChange={(e) => setFilterMateria(e.target.value)} style={{ ...inputStyle, width: '100%', appearance: 'auto', cursor: 'pointer', color: '#f4f4f5' } as React.CSSProperties}>
-                  <option value="Todas" style={{ color: '#000' }}>Todas as Matérias</option>
-                  {uniqueMaterias.map(m => <option key={m} value={m} style={{ color: '#000' }}>{m}</option>)}
-                </select>
-              </div>
-              <div style={{ flex: '0 1 180px' }}>
-                <select value={groupBy} onChange={(e) => setGroupBy(e.target.value as 'Nenhum' | 'Concurso' | 'Materia')} style={{ ...inputStyle, width: '100%', appearance: 'auto', cursor: 'pointer', color: '#f4f4f5' } as React.CSSProperties}>
-                  <option value="Nenhum" style={{ color: '#000' }}>Agrupar: Nenhum</option>
-                  <option value="Concurso" style={{ color: '#000' }}>Agrupar por Concurso</option>
-                  <option value="Materia" style={{ color: '#000' }}>Agrupar por Matéria</option>
-                </select>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 16 }}>
+                <div style={{ position: 'relative' }}>
+                  <select value={filterConcurso} onChange={(e) => setFilterConcurso(e.target.value)} style={{ ...inputStyle, width: '100%', appearance: 'none', WebkitAppearance: 'none', cursor: 'pointer', color: filterConcurso === 'Todos' ? '#a1a1aa' : '#f4f4f5', background: '#000000', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 14, height: 52, paddingRight: 40, paddingLeft: 16 } as React.CSSProperties}>
+                    <option value="Todos" style={{ color: '#000' }}>Todos os Concursos</option>
+                    {uniqueConcursos.map(c => <option key={c} value={c} style={{ color: '#000' }}>{c}</option>)}
+                  </select>
+                  <div style={{ position: 'absolute', right: 16, top: '50%', transform: 'translateY(-50%)', color: '#71717a', pointerEvents: 'none', display: 'flex' }}>
+                    <Icons.ChevronDown />
+                  </div>
+                </div>
+                <div style={{ position: 'relative' }}>
+                  <select value={filterMateria} onChange={(e) => setFilterMateria(e.target.value)} style={{ ...inputStyle, width: '100%', appearance: 'none', WebkitAppearance: 'none', cursor: 'pointer', color: filterMateria === 'Todas' ? '#a1a1aa' : '#f4f4f5', background: '#000000', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 14, height: 52, paddingRight: 40, paddingLeft: 16 } as React.CSSProperties}>
+                    <option value="Todas" style={{ color: '#000' }}>Todas as Matérias</option>
+                    {uniqueMaterias.map(m => <option key={m} value={m} style={{ color: '#000' }}>{m}</option>)}
+                  </select>
+                  <div style={{ position: 'absolute', right: 16, top: '50%', transform: 'translateY(-50%)', color: '#71717a', pointerEvents: 'none', display: 'flex' }}>
+                    <Icons.ChevronDown />
+                  </div>
+                </div>
+                <div style={{ position: 'relative' }}>
+                  <select value={groupBy} onChange={(e) => setGroupBy(e.target.value as 'Nenhum' | 'Concurso' | 'Materia')} style={{ ...inputStyle, width: '100%', appearance: 'none', WebkitAppearance: 'none', cursor: 'pointer', color: groupBy === 'Nenhum' ? '#a1a1aa' : '#f4f4f5', background: '#000000', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 14, height: 52, paddingRight: 40, paddingLeft: 16 } as React.CSSProperties}>
+                    <option value="Nenhum" style={{ color: '#000' }}>Agrupar: Nenhum</option>
+                    <option value="Concurso" style={{ color: '#000' }}>Agrupar por Concurso</option>
+                    <option value="Materia" style={{ color: '#000' }}>Agrupar por Matéria</option>
+                  </select>
+                  <div style={{ position: 'absolute', right: 16, top: '50%', transform: 'translateY(-50%)', color: '#71717a', pointerEvents: 'none', display: 'flex' }}>
+                    <Icons.ChevronDown />
+                  </div>
+                </div>
               </div>
             </div>
             {renderDecks()}

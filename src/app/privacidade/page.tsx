@@ -68,8 +68,8 @@ export default function PrivacidadePage() {
           <section>
             <h2 style={sectionTitleStyle}>1. Escopo e responsável pelo tratamento</h2>
             <p style={paragraphStyle}>
-              Esta Política descreve como a plataforma Vimens, também apresentada publicamente como
-              Memoriza, trata dados pessoais de usuários, visitantes e clientes. Para assuntos de
+              Esta Política descreve como a plataforma Vimens trata dados pessoais de usuários,
+              visitantes e clientes. Para assuntos de
               privacidade e exercício de direitos, o canal oficial de contato é{' '}
               <a href="mailto:suporte@vimens.app" style={{ color: 'var(--accent)' }}>
                 suporte@vimens.app

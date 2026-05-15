@@ -1,0 +1,548 @@
+﻿
+[1m[46m RUN [49m[22m [36mv4.0.16 [39m[90mC:/Users/Albert/Documents/memorizeai[39m
+
+ [32mÔ£ô[39m src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22mbilling checkout[2m > [22mcreates checkout session for authenticated user[33m 442[2mms[22m[39m
+ [32mÔ£ô[39m src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22mbilling checkout[2m > [22mrejects forbidden pricing fields sent by client[32m 6[2mms[22m[39m
+ [32mÔ£ô[39m src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22mbilling checkout[2m > [22mrejects checkout when the same paid plan is already active[32m 5[2mms[22m[39m
+ [32mÔ£ô[39m src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22mbilling checkout confirmation fallback[2m > [22mconfirms checkout by session_id and synchronizes profile/subscription[32m 99[2mms[22m[39m
+ [32mÔ£ô[39m src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22mbilling checkout confirmation fallback[2m > [22mrejects checkout confirmation when metadata user does not match authenticated user[32m 7[2mms[22m[39m
+ [32mÔ£ô[39m src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22mbilling portal[2m > [22mcreates portal session for subscribed user[32m 72[2mms[22m[39m
+ [32mÔ£ô[39m src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22mbilling portal[2m > [22mreturns 400 when user has no customer id[32m 6[2mms[22m[39m
+ [32mÔ£ô[39m src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22mcancel subscription[2m > [22mallows localhost origin and schedules cancellation at period end[32m 90[2mms[22m[39m
+ [32mÔ£ô[39m src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22mcancel subscription[2m > [22mfalls back to subscriptions table when profile does not expose stripe_customer_id[32m 7[2mms[22m[39m
+ [32mÔ£ô[39m src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22mcancel subscription[2m > [22mreturns 403 for invalid origin[32m 6[2mms[22m[39m
+ [32mÔ£ô[39m src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22mrefund subscription[2m > [22mrefunds the latest paid invoice within 7 days and cancels immediately[32m 113[2mms[22m[39m
+ [32mÔ£ô[39m src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22mrefund subscription[2m > [22mrejects automatic refund when the 7-day window has expired[32m 4[2mms[22m[39m
+[90mstdout[2m | src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22m[2mbilling webhook[2m > [22m[2mprocesses checkout.session.completed and upgrades user
+[22m[39m[Stripe Webhook] User user_1 upgraded to pro
+
+[90mstdout[2m | src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22m[2mbilling webhook[2m > [22m[2mprocesses checkout.session.completed using subscription metadata fallback when session metadata is missing
+[22m[39m[Stripe Webhook] User user_from_subscription_metadata upgraded to pro
+
+[90mstdout[2m | src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22m[2mbilling webhook[2m > [22m[2mprocesses customer.subscription.deleted and downgrades user
+[22m[39m[Stripe Webhook] User user_1 downgraded to free
+
+node.exe : [90mstderr[2m | 
+src/app/api/stripe/tests/bill
+ing-e2e.test.ts[2m > 
+[22m[2mbilling webhook[2m 
+> [22m[2mreturns 400 and 
+records failed attempt when 
+signature verification fails
+No linha:1 caractere:1
++ & 
+"C:\nvm4w\nodejs/node.exe" "C
+:\nvm4w\nodejs/node_modules/n
+pm/bin/np ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~
+    + CategoryInfo           
+   : NotSpecified: ([90mst  
+  derr[2m...ification fai   
+ ls:String) [], RemoteExc    
+eption
+    + FullyQualifiedErrorId  
+   : NativeCommandError
+ 
+[22m[39m[Stripe Webhook] 
+Signature verification 
+failed: invalid signature
+
+[90mstdout[2m | src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22m[2mbilling webhook[2m > [22m[2mreturns duplicate ack and skips processing when event is not new
+[22m[39m[Stripe Webhook] Duplicate event ignored: evt_duplicate_123
+
+[90mstdout[2m | src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22m[2mbilling webhook[2m > [22m[2msyncs plan and period for existing subscriber on customer.subscription.updated
+[22m[39m[Stripe Webhook] Subscription sub_renew_123 updated to active
+
+[90mstdout[2m | src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22m[2mbilling webhook[2m > [22m[2msyncs period from subscription item fields when root period fields are missing
+[22m[39m[Stripe Webhook] Subscription sub_item_period_123 updated to active
+
+[90mstderr[2m | src/app/api
+/stripe/tests/billing-e2e.tes
+t.ts[2m > [22m[2mbilling 
+webhook[2m > 
+[22m[2mprocesses 
+invoice.paid and confirms 
+active paid renewal state
+[22m[39m[Notifications] 
+getLegacyNotificationPrefs 
+unexpected error: Unexpected 
+table in test: 
+user_preferences
+
+[90mstderr[2m | src/app/api
+/stripe/tests/billing-e2e.tes
+t.ts[2m > [22m[2mbilling 
+webhook[2m > 
+[22m[2mprocesses 
+invoice.paid and confirms 
+active paid renewal state
+[22m[39m[Stripe Webhook] 
+Notification error: Error: 
+Unexpected table in test: 
+notification_preferences
+    at Object.<anonymous> (C:
+/Users/Albert/Documents/memor
+izeai/src/app/api/stripe/test
+s/billing-e2e.test.ts:269:11)
+    at Object.Mock [90m(file
+:///C:/Users/Albert/Documents
+/memorizeai/[39mnode_modules
+/[4m@vitest/spy[24m/dist/in
+dex.js:285:34[90m)[39m
+    at ensureNotificationPref
+erences (C:/Users/Albert/Docu
+ments/memorizeai/src/lib/noti
+fications/service.ts:123:6)
+    at resolveChannels (C:/Us
+ers/Albert/Documents/memorize
+ai/src/lib/notifications/serv
+ice.ts:255:23)
+[90m    at 
+processTicksAndRejections (no
+de:internal/process/task_queu
+es:105:5)[39m
+    at createAppNotification 
+(C:/Users/Albert/Documents/me
+morizeai/src/lib/notification
+s/service.ts:396:24)
+
+[90mstdout[2m | src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22m[2mbilling webhook[2m > [22m[2mprocesses invoice.paid and confirms active paid renewal state
+[22m[39m[Stripe Webhook] Invoice paid processed for user user_invoice_paid
+
+ [31m├ù[39m src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22mbilling webhook[2m > [22mprocesses checkout.session.completed and upgrades user[33m 5285[2mms[22m[39m
+[31m   ÔåÆ Test timed out in 5000ms.
+If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".[39m
+ [32mÔ£ô[39m src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22mbilling webhook[2m > [22mprocesses checkout.session.completed using subscription metadata fallback when session metadata is missing[32m 12[2mms[22m[39m
+ [32mÔ£ô[39m src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22mbilling webhook[2m > [22mprocesses customer.subscription.deleted and downgrades user[32m 14[2mms[22m[39m
+ [32mÔ£ô[39m src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22mbilling webhook[2m > [22mreturns 400 and records failed attempt when signature verification fails[32m 12[2mms[22m[39m
+ [32mÔ£ô[39m src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22mbilling webhook[2m > [22mreturns duplicate ack and skips processing when event is not new[32m 9[2mms[22m[39m
+ [32mÔ£ô[39m src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22mbilling webhook[2m > [22msyncs plan and period for existing subscriber on customer.subscription.updated[32m 12[2mms[22m[39m
+ [32mÔ£ô[39m src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22mbilling webhook[2m > [22msyncs period from subscription item fields when root period fields are missing[32m 17[2mms[22m[39m
+ [32mÔ£ô[39m src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22mbilling webhook[2m > [22mprocesses invoice.paid and confirms active paid renewal state[32m 170[2mms[22m[39m
+[90mstderr[2m | src/app/api
+/stripe/tests/billing-e2e.tes
+t.ts[2m > [22m[2mbilling 
+webhook[2m > 
+[22m[2mprocesses 
+invoice.paid resolving user 
+via subscription mapping 
+fallback
+[22m[39m[Notifications] 
+getLegacyNotificationPrefs 
+unexpected error: Unexpected 
+table in test: 
+user_preferences
+
+[90mstderr[2m | src/app/api
+/stripe/tests/billing-e2e.tes
+t.ts[2m > [22m[2mbilling 
+webhook[2m > 
+[22m[2mprocesses 
+invoice.paid resolving user 
+via subscription mapping 
+fallback
+[22m[39m[Stripe Webhook] 
+Notification error: Error: 
+Unexpected table in test: 
+notification_preferences
+    at Object.<anonymous> (C:
+/Users/Albert/Documents/memor
+izeai/src/app/api/stripe/test
+s/billing-e2e.test.ts:269:11)
+    at Object.Mock [90m(file
+:///C:/Users/Albert/Documents
+/memorizeai/[39mnode_modules
+/[4m@vitest/spy[24m/dist/in
+dex.js:285:34[90m)[39m
+    at ensureNotificationPref
+erences (C:/Users/Albert/Docu
+ments/memorizeai/src/lib/noti
+fications/service.ts:123:6)
+    at resolveChannels (C:/Us
+ers/Albert/Documents/memorize
+ai/src/lib/notifications/serv
+ice.ts:255:23)
+[90m    at 
+processTicksAndRejections (no
+de:internal/process/task_queu
+es:105:5)[39m
+    at createAppNotification 
+(C:/Users/Albert/Documents/me
+morizeai/src/lib/notification
+s/service.ts:396:24)
+
+[90mstdout[2m | src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22m[2mbilling webhook[2m > [22m[2mprocesses invoice.paid resolving user via subscription mapping fallback
+[22m[39m[Stripe Webhook] Invoice paid processed for user user_from_subscription_row
+
+[90mstderr[2m | src/app/api
+/stripe/tests/billing-e2e.tes
+t.ts[2m > [22m[2mbilling 
+webhook[2m > 
+[22m[2mprocesses 
+invoice.paid with multiple 
+lines and picks the main 
+subscription line
+[22m[39m[Notifications] 
+getLegacyNotificationPrefs 
+unexpected error: Unexpected 
+table in test: 
+user_preferences
+
+[90mstderr[2m | src/app/api
+/stripe/tests/billing-e2e.tes
+t.ts[2m > [22m[2mbilling 
+webhook[2m > 
+[22m[2mprocesses 
+invoice.paid with multiple 
+lines and picks the main 
+subscription line
+[22m[39m[Stripe Webhook] 
+Notification error: Error: 
+Unexpected table in test: 
+notification_preferences
+    at Object.<anonymous> (C:
+/Users/Albert/Documents/memor
+izeai/src/app/api/stripe/test
+s/billing-e2e.test.ts:269:11)
+    at Object.Mock [90m(file
+:///C:/Users/Albert/Documents
+/memorizeai/[39mnode_modules
+/[4m@vitest/spy[24m/dist/in
+dex.js:285:34[90m)[39m
+    at ensureNotificationPref
+erences (C:/Users/Albert/Docu
+ments/memorizeai/src/lib/noti
+fications/service.ts:123:6)
+    at resolveChannels (C:/Us
+ers/Albert/Documents/memorize
+ai/src/lib/notifications/serv
+ice.ts:255:23)
+[90m    at 
+processTicksAndRejections (no
+de:internal/process/task_queu
+es:105:5)[39m
+    at createAppNotification 
+(C:/Users/Albert/Documents/me
+morizeai/src/lib/notification
+s/service.ts:396:24)
+
+[90mstdout[2m | src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22m[2mbilling webhook[2m > [22m[2mprocesses invoice.paid with multiple lines and picks the main subscription line
+[22m[39m[Stripe Webhook] Invoice paid processed for user user_invoice_multi
+
+[90mstderr[2m | src/app/api
+/stripe/tests/billing-e2e.tes
+t.ts[2m > [22m[2mbilling 
+webhook[2m > 
+[22m[2mignores 
+invoice.paid without 
+subscription id and still 
+acknowledges webhook
+[22m[39m[Stripe Webhook] 
+invoice.paid without 
+subscription id
+
+[90mstdout[2m | src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22m[2mbilling webhook[2m > [22m[2mreturns duplicate ack and skips processing for duplicate invoice.paid event
+[22m[39m[Stripe Webhook] Duplicate event ignored: evt_invoice_paid_dup_123
+
+[90mstdout[2m | src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22m[2mbilling webhook[2m > [22m[2mprocesses invoice.payment_failed and marks profile as past_due
+[22m[39m[Stripe Webhook] User user_invoice_failed marked as past_due
+
+[90mstdout[2m | src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22m[2mbilling webhook[2m > [22m[2mcovers checkout -> webhook upgrade -> cancelamento agendado -> downgrade por cancelamento efetivo
+[22m[39m[Stripe Webhook] User user_full_flow upgraded to pro
+
+[90mstdout[2m | src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22m[2mbilling webhook[2m > [22m[2mcovers checkout -> webhook upgrade -> cancelamento agendado -> downgrade por cancelamento efetivo
+[22m[39m[Stripe Webhook] Subscription sub_full_123 updated to active
+
+[90mstdout[2m | src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22m[2mbilling webhook[2m > [22m[2mcovers checkout -> webhook upgrade -> cancelamento agendado -> downgrade por cancelamento efetivo
+[22m[39m[Stripe Webhook] User user_full_flow downgraded to free
+
+[90mstdout[2m | src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22m[2mbilling webhook[2m > [22m[2mcovers falha de pagamento seguida de recupera├º├úo via invoice.paid
+[22m[39m[Stripe Webhook] User user_recovery marked as past_due
+
+[90mstderr[2m | src/app/api
+/stripe/tests/billing-e2e.tes
+t.ts[2m > [22m[2mbilling 
+webhook[2m > 
+[22m[2mcovers falha de 
+pagamento seguida de 
+recupera├º├úo via 
+invoice.paid
+[22m[39m[Notifications] 
+getLegacyNotificationPrefs 
+unexpected error: Unexpected 
+table in test: 
+user_preferences
+
+[90mstderr[2m | src/app/api
+/stripe/tests/billing-e2e.tes
+t.ts[2m > [22m[2mbilling 
+webhook[2m > 
+[22m[2mcovers falha de 
+pagamento seguida de 
+recupera├º├úo via 
+invoice.paid
+[22m[39m[Stripe Webhook] 
+Notification error: Error: 
+Unexpected table in test: 
+notification_preferences
+    at Object.<anonymous> (C:
+/Users/Albert/Documents/memor
+izeai/src/app/api/stripe/test
+s/billing-e2e.test.ts:269:11)
+    at Object.Mock [90m(file
+:///C:/Users/Albert/Documents
+/memorizeai/[39mnode_modules
+/[4m@vitest/spy[24m/dist/in
+dex.js:285:34[90m)[39m
+    at ensureNotificationPref
+erences (C:/Users/Albert/Docu
+ments/memorizeai/src/lib/noti
+fications/service.ts:123:6)
+    at resolveChannels (C:/Us
+ers/Albert/Documents/memorize
+ai/src/lib/notifications/serv
+ice.ts:255:23)
+[90m    at 
+processTicksAndRejections (no
+de:internal/process/task_queu
+es:105:5)[39m
+    at createAppNotification 
+(C:/Users/Albert/Documents/me
+morizeai/src/lib/notification
+s/service.ts:396:24)
+
+[90mstdout[2m | src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22m[2mbilling webhook[2m > [22m[2mcovers falha de pagamento seguida de recupera├º├úo via invoice.paid
+[22m[39m[Stripe Webhook] Invoice paid processed for user user_recovery
+
+[90mstderr[2m | src/app/api
+/stripe/tests/billing-e2e.tes
+t.ts[2m > [22m[2mbilling 
+webhook[2m > 
+[22m[2mreturns 
+permanent_failure when 
+checkout.session.completed 
+has no user_id
+[22m[39m[Stripe Webhook] 
+Unable to resolve user_id 
+for 
+checkout.session.completed 
+(session undefined)
+
+[90mstderr[2m | src/app/api
+/stripe/tests/billing-e2e.tes
+t.ts[2m > [22m[2mbilling 
+webhook[2m > 
+[22m[2mreturns 
+permanent_failure when 
+checkout.session.completed 
+has no user_id
+[22m[39m[stripe/webhook] 
+Unable to resolve user_id 
+for 
+checkout.session.completed 
+(session undefined)
+
+[90mstderr[2m | src/app/api
+/stripe/tests/billing-e2e.tes
+t.ts[2m > [22m[2mbilling 
+webhook[2m > 
+[22m[2mreturns 
+permanent_failure when 
+subscription.updated 
+identity is unresolvable
+[22m[39m[Stripe Webhook] 
+Unable to resolve identity 
+for customer.subscription.upd
+ated (sub sub_ghost_123)
+
+[90mstderr[2m | src/app/api
+/stripe/tests/billing-e2e.tes
+t.ts[2m > [22m[2mbilling 
+webhook[2m > 
+[22m[2mreturns 
+permanent_failure when 
+subscription.updated 
+identity is unresolvable
+[22m[39m[stripe/webhook] 
+Unable to resolve identity 
+for customer.subscription.upd
+ated (sub sub_ghost_123)
+
+[90mstderr[2m | src/app/api
+/stripe/tests/billing-e2e.tes
+t.ts[2m > [22m[2mbilling 
+webhook[2m > 
+[22m[2mreturns 
+permanent_failure when 
+subscription.deleted 
+identity is unresolvable
+[22m[39m[Stripe Webhook] 
+Unable to resolve identity 
+for customer.subscription.del
+eted (sub sub_vanished_123)
+
+[90mstderr[2m | src/app/api
+/stripe/tests/billing-e2e.tes
+t.ts[2m > [22m[2mbilling 
+webhook[2m > 
+[22m[2mreturns 
+permanent_failure when 
+subscription.deleted 
+identity is unresolvable
+[22m[39m[stripe/webhook] 
+Unable to resolve identity 
+for customer.subscription.del
+eted (sub sub_vanished_123)
+
+[90mstderr[2m | src/app/api
+/stripe/tests/billing-e2e.tes
+t.ts[2m > [22m[2mbilling 
+webhook[2m > 
+[22m[2mreturns 
+permanent_failure when 
+invoice.paid identity is 
+unresolvable
+[22m[39m[Stripe Webhook] 
+Unable to resolve identity 
+for invoice.paid (sub 
+sub_nobody_123)
+
+[90mstderr[2m | src/app/api
+/stripe/tests/billing-e2e.tes
+t.ts[2m > [22m[2mbilling 
+webhook[2m > 
+[22m[2mreturns 
+permanent_failure when 
+invoice.paid identity is 
+unresolvable
+[22m[39m[stripe/webhook] 
+Unable to resolve identity 
+for invoice.paid (sub 
+sub_nobody_123)
+
+[90mstderr[2m | src/app/api
+/stripe/tests/billing-e2e.tes
+t.ts[2m > [22m[2mbilling 
+webhook[2m > 
+[22m[2mreturns 500 
+(transient_failure) when 
+profile update fails on 
+checkout.session.completed
+[22m[39m[Stripe Webhook] 
+Profile update failed for 
+user user_dbfail: connection 
+timeout
+
+[90mstderr[2m | src/app/api
+/stripe/tests/billing-e2e.tes
+t.ts[2m > [22m[2mbilling 
+webhook[2m > 
+[22m[2mreturns 500 
+(transient_failure) when 
+profile update fails on 
+checkout.session.completed
+[22m[39m[stripe/webhook] 
+Webhook transient failure: 
+Profile update failed for 
+user user_dbfail: connection 
+timeout
+
+[90mstderr[2m | src/app/api
+/stripe/tests/billing-e2e.tes
+t.ts[2m > [22m[2mbilling 
+webhook[2m > 
+[22m[2mreturns 500 
+(transient_failure) when 
+subscription upsert fails on 
+customer.subscription.updated
+[22m[39m[Stripe Webhook] 
+Subscription upsert failed 
+for sub sub_upsert_fail_123: 
+deadlock detected
+
+[90mstderr[2m | src/app/api
+/stripe/tests/billing-e2e.tes
+t.ts[2m > [22m[2mbilling 
+webhook[2m > 
+[22m[2mreturns 500 
+(transient_failure) when 
+subscription upsert fails on 
+customer.subscription.updated
+[22m[39m[stripe/webhook] 
+Webhook transient failure: 
+Subscription upsert failed 
+for sub sub_upsert_fail_123: 
+deadlock detected
+
+ [32mÔ£ô[39m src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22mbilling webhook[2m > [22mprocesses invoice.paid resolving user via subscription mapping fallback[32m 10[2mms[22m[39m
+ [32mÔ£ô[39m src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22mbilling webhook[2m > [22mprocesses invoice.paid with multiple lines and picks the main subscription line[32m 9[2mms[22m[39m
+ [32mÔ£ô[39m src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22mbilling webhook[2m > [22mignores invoice.paid without subscription id and still acknowledges webhook[32m 8[2mms[22m[39m
+ [32mÔ£ô[39m src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22mbilling webhook[2m > [22mreturns duplicate ack and skips processing for duplicate invoice.paid event[32m 9[2mms[22m[39m
+ [32mÔ£ô[39m src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22mbilling webhook[2m > [22mprocesses invoice.payment_failed and marks profile as past_due[32m 9[2mms[22m[39m
+ [32mÔ£ô[39m src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22mbilling webhook[2m > [22mcovers checkout -> webhook upgrade -> cancelamento agendado -> downgrade por cancelamento efetivo[32m 13[2mms[22m[39m
+ [32mÔ£ô[39m src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22mbilling webhook[2m > [22mcovers falha de pagamento seguida de recupera├º├úo via invoice.paid[32m 10[2mms[22m[39m
+ [32mÔ£ô[39m src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22mbilling webhook[2m > [22mreturns permanent_failure when checkout.session.completed has no user_id[32m 20[2mms[22m[39m
+ [32mÔ£ô[39m src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22mbilling webhook[2m > [22mreturns permanent_failure when subscription.updated identity is unresolvable[32m 8[2mms[22m[39m
+ [32mÔ£ô[39m src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22mbilling webhook[2m > [22mreturns permanent_failure when subscription.deleted identity is unresolvable[32m 8[2mms[22m[39m
+ [32mÔ£ô[39m src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22mbilling webhook[2m > [22mreturns permanent_failure when invoice.paid identity is unresolvable[32m 14[2mms[22m[39m
+ [32mÔ£ô[39m src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22mbilling webhook[2m > [22mreturns 500 (transient_failure) when profile update fails on checkout.session.completed[32m 12[2mms[22m[39m
+ [32mÔ£ô[39m src/app/api/stripe/tests/billing-e2e.test.ts[2m > [22mbilling webhook[2m > [22mreturns 500 (transient_failure) when subscription upsert fails on customer.subscription.updated[32m 8[2mms[22m[39m
+
+[31mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»[3
+9m[1m[41m Failed Tests 1 [
+49m[22m[31mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»Ô
+Ä»ÔÄ»[39m
+
+[41m[1m FAIL [22m[49m src
+/app/api/stripe/tests/billing
+-e2e.test.ts[2m > 
+[22mbilling webhook[2m > 
+[22mprocesses 
+checkout.session.completed 
+and upgrades user
+[31m[1mError[22m: Test 
+timed out in 5000ms.
+If this is a long-running 
+test, pass a timeout value 
+as the last argument or 
+configure it globally with 
+"testTimeout".[39m
+[36m [2mÔØ»[22m src/app/ap
+i/stripe/tests/billing-e2e.te
+st.ts:[2m917:3[22m[39m
+    [90m915| [39m
+    [90m916| [39m[34mdescr
+ibe[39m([32m'billing 
+webhook'[39m[33m,[39m () 
+[33m=>[39m {
+    [90m917| [39m  
+it('processes 
+checkout.session.completed 
+and upgrades user', async 
+(ÔÇª
+    [90m   | [39m  
+[31m^[39m
+    [90m918| [39m    
+[35mconst[39m admin 
+[33m=[39m [34mcreateAdminS
+upabaseClient[39m()[33m;[3
+9m
+    [90m919| [39m    mocks
+[33m.[39madminCreateClient[
+33m.[39m[34mmockReturnValue
+[39m(admin[33m.[39mclient)
+[33m;[39m
+
+[31m[2mÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ
+»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»Ô
+Ä»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»ÔÄ»[1/1]Ô
+Ä»[22m[39m
+
+
+[2m Test Files [22m [1m[31m1 failed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m32 passed[39m[22m[90m (33)[39m
+[2m   Start at [22m 21:33:28
+[2m   Duration [22m 8.62s[2m (transform 1.13s, setup 0ms, import 1.06s, tests 6.54s, environment 0ms)[22m
+

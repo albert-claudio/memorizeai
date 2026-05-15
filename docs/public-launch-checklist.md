@@ -21,8 +21,7 @@
 - `RUNS_PROCESS_INTERNAL_SECRET`
 - `QSTASH_CURRENT_SIGNING_KEY`
 - `QSTASH_NEXT_SIGNING_KEY`
-- `ADMIN_EMAILS`
-- `ADMIN_PASSWORD`
+- `SECURITY_ALERT_EMAIL`
 - `UPSTASH_REDIS_REST_URL`
 - `UPSTASH_REDIS_REST_TOKEN`
 
@@ -39,7 +38,7 @@
 
 ## 4. Security checks after deploy
 
-- Confirm admin routes require both authenticated session and `x-admin-password`.
+- Confirm admin routes require authenticated session, JWT admin role, DB admin role, and MFA AAL2.
 - Confirm `app_events` rejects direct anon inserts through the public Supabase endpoint.
 - Confirm the CSP header in production no longer includes `'unsafe-eval'`.
 - Confirm Stripe checkout only accepts the allowed origins.

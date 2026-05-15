@@ -15,15 +15,16 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 describe('createLogger', () => {
   let logSpy: ReturnType<typeof vi.spyOn>;
   const origEnv = process.env.NODE_ENV;
+  const envRef = process.env as NodeJS.ProcessEnv & { NODE_ENV?: string };
 
   beforeEach(() => {
-    process.env.NODE_ENV = 'production';
+    envRef.NODE_ENV = 'production';
     logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
   });
 
   afterEach(() => {
     logSpy.mockRestore();
-    process.env.NODE_ENV = origEnv;
+    envRef.NODE_ENV = origEnv;
   });
 
   /**
@@ -93,7 +94,7 @@ describe('createLogger', () => {
     expect(logSpy).toHaveBeenCalledTimes(4);
 
     const levels = logSpy.mock.calls.map(
-      c => JSON.parse(c[0] as string).level
+      (c: [unknown, ...unknown[]]) => JSON.parse(c[0] as string).level
     );
     expect(levels).toEqual(['debug', 'info', 'warn', 'error']);
   });

@@ -1,0 +1,29 @@
+{
+  "runCount": 25,
+  "completed": false,
+  "timedOutAtMs": 900000,
+  "summaryWritten": false,
+  "observed": {
+    "initialQueueCycle": {
+      "eligible": 25,
+      "dispatched": 5,
+      "skippedCapacity": 20,
+      "maxGroqFlashcardActive": 5
+    },
+    "rateLimits": [
+      {
+        "type": "TPM",
+        "limit": 12000,
+        "observedEarlierInRun": true
+      },
+      {
+        "type": "TPD",
+        "limit": 100000,
+        "used": 97668,
+        "requested": 10083,
+        "retryAfter": "1h51m36.864s"
+      }
+    ]
+  },
+  "conclusion": "The 25-run live test did not finish within the configured timeout and exhausted the Groq daily token budget, so 50/75/100 should not be run on the same day with the current account/quota."
+}

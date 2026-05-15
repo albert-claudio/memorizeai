@@ -2,17 +2,24 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { createLogger } from '@/lib/logger';
 import { authenticateCronRequest } from '@/lib/security/cron-auth';
+import { captureWarning } from '@/lib/sentry';
+import { releaseSlot, resolveSlotKey } from '@/lib/ai/provider-capacity';
 
-const MAX_ATTEMPTS = 3;
-const PENDING_THRESHOLD_MS = 2 * 60 * 1000;
-const PROCESSING_THRESHOLD_MS = 10 * 60 * 1000;
+const MAX_ATTEMPTS = 5; // Aligned with retry-policy.ts
+const LEASE_EXPIRY_THRESHOLD_MS = parseInt(process.env.RUN_LEASE_MS || '180000', 10);
+const STALE_QUEUED_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes — queued runs forgotten beyond this
 
 /**
  * GET /api/cron/recover-runs
  *
  * Scheduled job that runs every 5 minutes.
- * Recovers runs stuck in 'pendente' or 'processando' by re-triggering
- * the processor, or marking them as permanently failed.
+ * Recovers runs that are stuck — NOT the primary dispatch mechanism.
+ * Primary dispatch is handled by /api/cron/process-queue.
+ *
+ * This cron handles:
+ * 1. Runs stuck in 'processando' with expired leases → return to 'queued'
+ * 2. Runs in 'queued' or 'retry_wait' forgotten beyond a threshold → return to 'queued'
+ * 3. Runs that have exhausted attempts → mark as 'erro'
  */
 export async function GET(request: NextRequest) {
   const logger = createLogger({ component: 'recover-runs' });
@@ -29,31 +36,88 @@ export async function GET(request: NextRequest) {
     process.env.SUPABASE_SERVICE_ROLE_KEY!
   );
 
-  const internalSecret = process.env.RUNS_PROCESS_INTERNAL_SECRET?.trim();
-  if (!internalSecret) {
-    logger.error('cron_misconfigured', { message: 'RUNS_PROCESS_INTERNAL_SECRET not set' });
-    return NextResponse.json({ error: 'Server misconfigured' }, { status: 500 });
-  }
-
-  const { getBaseUrl } = await import('@/lib/url');
-  const baseUrl = getBaseUrl();
   const now = Date.now();
 
-  let retriggered = 0;
+  let recoveredFromProcessing = 0;
+  let recoveredFromStale = 0;
   let markedFailed = 0;
 
-  const pendingCutoff = now - PENDING_THRESHOLD_MS;
+  // ── 1. Recover runs stuck in 'processando' with expired leases ──────────
 
-  const { data: stuckPending } = await supabase
+  const { data: stuckProcessing } = await supabase
     .from('runs')
-    .select('id, attempt_count, created_at')
-    .eq('status', 'pendente')
+    .select('id, attempt_count, lease_expires_at, started_at, objective, model_preference')
+    .eq('status', 'processando')
     .is('deleted_at', null)
-    .lt('created_at', pendingCutoff)
     .order('created_at', { ascending: true })
-    .limit(20);
+    .limit(100);
 
-  for (const run of stuckPending ?? []) {
+  for (const run of stuckProcessing ?? []) {
+    const attempts: number = run.attempt_count ?? 0;
+    const hasLease = typeof run.lease_expires_at === 'number';
+    const leaseExpired = hasLease && Number(run.lease_expires_at) <= now;
+    const leaseActive = hasLease && Number(run.lease_expires_at) > now;
+    const missingLeaseTooLong =
+      !hasLease &&
+      typeof run.started_at === 'number' &&
+      now - Number(run.started_at) > LEASE_EXPIRY_THRESHOLD_MS;
+
+    if (leaseActive) continue;
+    if (!leaseExpired && !missingLeaseTooLong) continue;
+
+    if (attempts >= MAX_ATTEMPTS) {
+      await releaseSlot(resolveSlotKey(run.objective, run.model_preference || 'auto', run.id), run.id);
+      await supabase
+        .from('runs')
+        .update({
+          status: 'erro',
+          error_message: `Travou em processamento após ${attempts} tentativas (recovery cron)`,
+          completed_at: now,
+          lease_expires_at: null,
+          processing_node: null,
+          updated_at: now,
+        })
+        .eq('id', run.id);
+      markedFailed++;
+      logger.info('cron_marked_failed', { runId: run.id, attempts, reason: 'stuck_processing' });
+      captureWarning(`Run stuck in processing permanently failed after ${attempts} attempts`, {
+        route: 'cron/recover-runs',
+        tags: { runId: run.id, reason: 'stuck_processing' },
+        extra: { attempts },
+      });
+    } else {
+      // Return to queue — the dispatcher will pick it up
+      await releaseSlot(resolveSlotKey(run.objective, run.model_preference || 'auto', run.id), run.id);
+      await supabase
+        .from('runs')
+        .update({
+          status: 'queued',
+          started_at: null,
+          next_attempt_at: now,
+          lease_expires_at: null,
+          processing_node: null,
+          updated_at: now,
+        })
+        .eq('id', run.id);
+      recoveredFromProcessing++;
+      logger.info('cron_recovered_processing', { runId: run.id, attempt: attempts });
+    }
+  }
+
+  // ── 2. Recover stale 'queued' or 'retry_wait' runs ──────────────────────
+
+  const staleCutoff = now - STALE_QUEUED_THRESHOLD_MS;
+
+  const { data: staleQueued } = await supabase
+    .from('runs')
+    .select('id, attempt_count, status, next_attempt_at')
+    .in('status', ['queued', 'retry_wait'])
+    .is('deleted_at', null)
+    .lt('next_attempt_at', staleCutoff) // next_attempt_at is way in the past
+    .order('created_at', { ascending: true })
+    .limit(100);
+
+  for (const run of staleQueued ?? []) {
     const attempts: number = run.attempt_count ?? 0;
 
     if (attempts >= MAX_ATTEMPTS) {
@@ -66,73 +130,75 @@ export async function GET(request: NextRequest) {
         })
         .eq('id', run.id);
       markedFailed++;
-      logger.info('cron_marked_failed', { runId: run.id, attempts });
-    } else {
-      fetch(`${baseUrl}/api/runs/process`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-internal-secret': internalSecret,
-        },
-        body: JSON.stringify({ runId: run.id }),
-      }).catch(err => {
-        logger.error('cron_retrigger_failed', { runId: run.id, error: String(err) });
+      logger.info('cron_marked_failed', { runId: run.id, attempts, reason: 'stale_queued' });
+      captureWarning(`Run permanently failed after ${attempts} attempts (cron recovery)`, {
+        route: 'cron/recover-runs',
+        tags: { runId: run.id, reason: 'max_attempts_stale' },
+        extra: { attempts },
       });
-      retriggered++;
-      logger.info('cron_retriggered', { runId: run.id, attempt: attempts + 1 });
+    } else {
+      // Reset to queued with next_attempt_at = now
+      await supabase
+        .from('runs')
+        .update({
+          status: 'queued',
+          started_at: null,
+          next_attempt_at: now,
+          updated_at: now,
+        })
+        .eq('id', run.id);
+      recoveredFromStale++;
+      logger.info('cron_recovered_stale', { runId: run.id, status: run.status, attempt: attempts });
     }
   }
 
-  const processingCutoff = now - PROCESSING_THRESHOLD_MS;
+  // ── 3. Also recover 'pendente' runs (legacy status before migration) ────
 
-  const { data: stuckProcessing } = await supabase
+  const { data: legacyPendente } = await supabase
     .from('runs')
-    .select('id, attempt_count, started_at')
-    .eq('status', 'processando')
+    .select('id, attempt_count, created_at')
+    .eq('status', 'pendente')
     .is('deleted_at', null)
-    .lt('started_at', processingCutoff)
-    .order('started_at', { ascending: true })
-    .limit(20);
+    .lt('created_at', staleCutoff)
+    .order('created_at', { ascending: true })
+    .limit(100);
 
-  for (const run of stuckProcessing ?? []) {
+  let legacyRecovered = 0;
+  for (const run of legacyPendente ?? []) {
     const attempts: number = run.attempt_count ?? 0;
-
     if (attempts >= MAX_ATTEMPTS) {
       await supabase
         .from('runs')
         .update({
           status: 'erro',
-          error_message: `Travou em processamento após ${MAX_ATTEMPTS} tentativas (recovery cron)`,
-          completed_at: now,
+          error_message: `Excedeu limite de ${MAX_ATTEMPTS} tentativas (pendente legado)`,
           updated_at: now,
         })
         .eq('id', run.id);
       markedFailed++;
-      logger.info('cron_marked_failed', { runId: run.id, attempts });
     } else {
-      // The idempotency guard in /api/runs/process accepts the run because
-      // started_at is old enough.
-      fetch(`${baseUrl}/api/runs/process`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-internal-secret': internalSecret,
-        },
-        body: JSON.stringify({ runId: run.id }),
-      }).catch(err => {
-        logger.error('cron_retrigger_failed', { runId: run.id, error: String(err) });
-      });
-      retriggered++;
-      logger.info('cron_retriggered_stuck', { runId: run.id, attempt: attempts + 1 });
+      await supabase
+        .from('runs')
+        .update({
+          status: 'queued',
+          started_at: null,
+          next_attempt_at: now,
+          updated_at: now,
+        })
+        .eq('id', run.id);
+      legacyRecovered++;
     }
   }
 
   const summary = {
     scanned: {
-      pending: stuckPending?.length ?? 0,
       processing: stuckProcessing?.length ?? 0,
+      staleQueued: staleQueued?.length ?? 0,
+      legacyPendente: legacyPendente?.length ?? 0,
     },
-    retriggered,
+    recoveredFromProcessing,
+    recoveredFromStale,
+    legacyRecovered,
     markedFailed,
   };
 

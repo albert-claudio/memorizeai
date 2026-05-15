@@ -78,7 +78,7 @@ export async function GET(request: NextRequest) {
   if (alerts.length > 0) {
     const alertUrl = process.env.WEBHOOK_ALERT_URL;
     if (alertUrl) {
-      const message = `📊 **Alerta Operacional - Memoriza**\n\n${alerts.join('\n')}\n\n_Verificado em ${new Date().toISOString()}_`;
+      const message = `📊 **Alerta Operacional - Vimens**\n\n${alerts.join('\n')}\n\n_Verificado em ${new Date().toISOString()}_`;
 
       fetch(alertUrl, {
         method: 'POST',

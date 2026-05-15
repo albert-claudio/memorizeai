@@ -1,0 +1,28 @@
+﻿
+C:\Users\Albert\Documents\memorizeai\src\app\api\runs\process\route.ts
+  24:27  warning  'captureWarning' is defined but never used  @typescript-eslint/no-unused-vars
+  24:43  warning  'setSentryUser' is defined but never used   @typescript-eslint/no-unused-vars
+
+C:\Users\Albert\Documents\memorizeai\src\app\api\tests\user-isolation-pentest.test.ts
+  136:10  warning  'createAdminSupabaseClient' is defined but never used  @typescript-eslint/no-unused-vars
+
+Ô£û 3 problems (0 errors, 3 warnings)
+
+node.exe : ESLint found too 
+many warnings (maximum: 0).
+No linha:1 caractere:1
++ & 
+"C:\nvm4w\nodejs/node.exe" "C
+:\nvm4w\nodejs/node_modules/n
+pm/bin/np ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~
+    + CategoryInfo           
+   : NotSpecified: (ESLint   
+  found to...s (maximum: 0   
+ ).:String) [], RemoteExc    
+eption
+    + FullyQualifiedErrorId  
+   : NativeCommandError
+ 

@@ -1,6 +1,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
+import * as Sentry from '@sentry/nextjs';
 import { createRun } from '@/app/actions/createRun';
 import type { Run, RunObjective, Banca, Dificuldade } from '@/lib/types';
 import { runService } from '../services/runService';
@@ -67,6 +68,7 @@ export function useRunCreation({ userId, onRunCompleted, deductCredit }: UseRunC
         }
       } catch (error) {
         console.error('[Hook] Polling error:', error);
+        Sentry.captureException(error, { tags: { hook: 'useRunCreation', action: 'polling', runId } });
       }
     }, 2000);
   }, [router, onRunCompleted, stopPolling]);
@@ -100,13 +102,20 @@ export function useRunCreation({ userId, onRunCompleted, deductCredit }: UseRunC
           objective: objective,
           model_preference: 'auto',
           target_count: targetCount,
-          status: 'pendente',
+          status: 'queued',
           model_used: null,
           attempt_count: 0,
+          provider_attempt_count: 0,
           items_generated: 0,
           error_message: null,
           started_at: null,
           completed_at: null,
+          next_attempt_at: Date.now(),
+          lease_expires_at: null,
+          processing_node: null,
+          last_error_code: null,
+          last_error_provider: null,
+          last_error_at: null,
           created_at: Date.now(),
           updated_at: Date.now(),
           deleted_at: null,
@@ -121,6 +130,7 @@ export function useRunCreation({ userId, onRunCompleted, deductCredit }: UseRunC
       }
     } catch (error: unknown) {
       console.error('Error creating run:', error);
+      Sentry.captureException(error, { tags: { hook: 'useRunCreation', action: 'createRun', sourceId, objective } });
       alert('Erro ao criar run');
       setCreating(false);
     }

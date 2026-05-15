@@ -123,7 +123,7 @@ export default function EstudarPage() {
   }
 
   if (isComplete) {
-    return <SessionSummary results={results} deckId={deckId} />;
+    return <SessionSummary results={results} deckId={deckId} userId={user?.id ?? ''} />;
   }
 
   if (waitingForRelearning.waiting) {

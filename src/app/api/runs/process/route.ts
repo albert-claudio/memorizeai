@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { createLogger } from '@/lib/logger';
-import { fetchWithTimeout } from '@/lib/ai/timeout';
 import { trackServer } from '@/lib/analytics/server-tracker';
 import {
   authorizeRunCreation,
@@ -13,11 +12,44 @@ import {
   checkCircuitBreaker,
   checkWeeklyTokenBudget,
   recordAISuccess,
-  recordAIFailure,
+  recordAIFailureClassified,
   logTokenAnomaly,
 } from '@/lib/ai/cost-guard';
-import { hasProAccess } from '@/lib/billing/pro-access';
+import { getEffectiveProAccess } from '@/lib/billing/effective-pro-access';
 import { rankChunksByRelevance, deduplicateByJaccard } from '@/lib/ai/chunk-ranker';
+import { selectChunksWithinTokenBudget as selectPromptChunksWithinTokenBudget } from '@/lib/ai/prompt-budget';
+import { getPromptPolicy, truncateChunk } from '@/lib/ai/prompt-policy';
+import {
+  classifyAIError,
+  extractHttpStatus,
+  getMaxAttempts,
+  getRetryDecision,
+  type AIErrorCode,
+} from '@/lib/ai/retry-policy';
+import {
+  acquireSlot,
+  releaseSlot,
+  renewSlot,
+  resolveSlotKey,
+  type ProviderSlotKey,
+} from '@/lib/ai/provider-capacity';
+import {
+  generateAIText,
+  getDefaultModelForProvider,
+  resolveRunProviderModel,
+} from '@/lib/ai/provider-router';
+import type { AIProvider, AITextResult } from '@/lib/ai/types';
+import {
+  estimateFlashcardsMaxOutputTokens,
+  formatFlashcardContext,
+  getFlashcardsPrompt,
+  normalizeCompactFlashcards,
+} from '@/lib/ai/flashcards';
+import { triggerQueueDispatch } from '@/lib/queue/trigger-queue-dispatch';
+import {
+  formatDigestForFlashcards,
+  type SourceDigestRow,
+} from '@/lib/source-digest';
 
 // Generate cryptographically secure random ID
 function generateId(): string {
@@ -38,8 +70,43 @@ function getRunProcessInternalSecret(): string | null {
   return process.env.RUNS_PROCESS_INTERNAL_SECRET?.trim() || null;
 }
 
-const MAX_ATTEMPTS = 3;
+function canFailoverFlashcardsToOpenAI(objective: string, preference: string | null | undefined): boolean {
+  return objective === 'flashcards' && (preference == null || preference === 'auto' || preference === 'groq');
+}
+
+function getFallbackSlotKey(
+  objective: string,
+  preference: string | null | undefined,
+  currentSlotKey: ProviderSlotKey,
+): ProviderSlotKey | null {
+  if (!canFailoverFlashcardsToOpenAI(objective, preference)) {
+    return null;
+  }
+
+  return currentSlotKey === 'groq:flashcards' ? 'openai:flashcards' : null;
+}
+
+function shouldFailoverGroqFlashcards(
+  objective: string,
+  preference: string | null | undefined,
+  provider: AIProvider,
+  errorCode: AIErrorCode,
+): boolean {
+  return (
+    canFailoverFlashcardsToOpenAI(objective, preference) &&
+    provider === 'groq' &&
+    (errorCode === 'rate_limit' || errorCode === 'provider_unavailable' || errorCode === 'timeout')
+  );
+}
+
+const MAX_ATTEMPTS = getMaxAttempts();
+const RUN_LEASE_MS = parseInt(process.env.RUN_LEASE_MS || '180000', 10);
+const RUN_LEASE_HEARTBEAT_MS = parseInt(
+  process.env.RUN_LEASE_HEARTBEAT_MS || String(Math.max(Math.floor(RUN_LEASE_MS / 3), 15000)),
+  10,
+);
 const STUCK_PROCESSING_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes
+const CHUNK_LOOKUP_RETRY_DELAYS_MS = [150, 500];
 
 // Types
 interface ChunkWithContext {
@@ -678,91 +745,166 @@ function checkBaseInsuficiente(rawText: string): { detected: true; motivo: strin
 // AI CLIENTS
 // ============================================================================
 
-interface AICallResult {
-  text: string;
-  totalTokens: number;
-  durationMs: number;
+type AICallResult = AITextResult;
+
+async function callProvider(
+  provider: AIProvider,
+  model: string,
+  systemPrompt: string,
+  userPrompt: string,
+  promptCacheKey?: string,
+  maxOutputTokens?: number,
+  renewLease?: (context: string) => Promise<void>,
+  leaseContext: string = 'provider-call',
+): Promise<AICallResult> {
+  await renewLease?.(`before:${leaseContext}`);
+  log(provider.toUpperCase(), `Calling provider ${provider} (${model})...`);
+  try {
+    const result = await generateAIText({
+      provider,
+      model,
+      system: systemPrompt,
+      user: userPrompt,
+      promptCacheKey,
+      maxOutputTokens,
+    });
+    log(provider.toUpperCase(), `API responded in ${result.durationMs}ms, ${result.totalTokens} tokens`);
+    return result;
+  } finally {
+    await renewLease?.(`after:${leaseContext}`);
+  }
 }
 
 async function callGemini(
   systemPrompt: string,
-  userPrompt: string
+  userPrompt: string,
+  renewLease?: (context: string) => Promise<void>,
+  leaseContext?: string,
 ): Promise<AICallResult> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) throw new Error("GEMINI_API_KEY not configured");
-
-  log('Gemini', 'Calling Gemini 2.5 Flash-lite API...');
-  const startTime = Date.now();
-
-  const response = await fetchWithTimeout(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${apiKey}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: `${systemPrompt}\n\n${userPrompt}` }] }],
-        generationConfig: {
-          temperature: 0.3,
-          maxOutputTokens: 16000,
-          responseMimeType: "application/json",
-        },
-      }),
-    }
+  return callProvider(
+    'gemini',
+    getDefaultModelForProvider('gemini', 'default'),
+    systemPrompt,
+    userPrompt,
+    undefined,
+    undefined,
+    renewLease,
+    leaseContext,
   );
-
-  if (!response.ok) {
-    const error = await response.text();
-    log('Gemini', `API Error: ${response.status} - ${error}`);
-    throw new Error(`Gemini API error: ${response.status} - ${error}`);
-  }
-
-  const data = await response.json();
-  const durationMs = Date.now() - startTime;
-  const totalTokens: number = data.usageMetadata?.totalTokenCount ?? 0;
-  log('Gemini', `API responded in ${durationMs}ms, ${totalTokens} tokens`);
-
-  return { text: data.candidates?.[0]?.content?.parts?.[0]?.text || "[]", totalTokens, durationMs };
 }
 
 async function callGroq(
   systemPrompt: string,
-  userPrompt: string
+  userPrompt: string,
+  renewLease?: (context: string) => Promise<void>,
+  leaseContext?: string,
 ): Promise<AICallResult> {
-  const apiKey = process.env.GROQ_API_KEY;
-  if (!apiKey) throw new Error("GROQ_API_KEY not configured");
+  return callProvider(
+    'groq',
+    getDefaultModelForProvider('groq', 'default'),
+    systemPrompt,
+    userPrompt,
+    undefined,
+    undefined,
+    renewLease,
+    leaseContext,
+  );
+}
 
-  log('Groq', 'Calling Groq Llama 3.3 API...');
-  const startTime = Date.now();
+interface RunUsageAccumulator {
+  callCount: number;
+  totalTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  cachedTokens: number;
+  estimatedCostUsd: number;
+  rawUsage: unknown[];
+  hasCompleteInputTokens: boolean;
+  hasCompleteOutputTokens: boolean;
+  hasCompleteCachedTokens: boolean;
+  hasCompleteEstimatedCost: boolean;
+}
 
-  const response = await fetchWithTimeout("https://api.groq.com/openai/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: "llama-3.3-70b-versatile",
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
-      ],
-      temperature: 0.2,
-      max_tokens: 8000,
-    }),
-  });
+function createRunUsageAccumulator(): RunUsageAccumulator {
+  return {
+    callCount: 0,
+    totalTokens: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cachedTokens: 0,
+    estimatedCostUsd: 0,
+    rawUsage: [],
+    hasCompleteInputTokens: true,
+    hasCompleteOutputTokens: true,
+    hasCompleteCachedTokens: true,
+    hasCompleteEstimatedCost: true,
+  };
+}
 
-  if (!response.ok) {
-    const error = await response.text();
-    log('Groq', `API Error: ${response.status} - ${error}`);
-    throw new Error(`Groq API error: ${response.status} - ${error}`);
+function accumulateRunUsage(accumulator: RunUsageAccumulator, result: AICallResult): void {
+  accumulator.callCount += 1;
+  accumulator.totalTokens += result.totalTokens ?? 0;
+
+  if (typeof result.inputTokens === 'number') {
+    accumulator.inputTokens += result.inputTokens;
+  } else {
+    accumulator.hasCompleteInputTokens = false;
   }
 
-  const data = await response.json();
-  const durationMs = Date.now() - startTime;
-  const totalTokens: number = data.usage?.total_tokens ?? 0;
-  log('Groq', `API responded in ${durationMs}ms, ${totalTokens} tokens`);
+  if (typeof result.outputTokens === 'number') {
+    accumulator.outputTokens += result.outputTokens;
+  } else {
+    accumulator.hasCompleteOutputTokens = false;
+  }
 
-  return { text: data.choices[0]?.message?.content || "[]", totalTokens, durationMs };
+  if (typeof result.cachedTokens === 'number') {
+    accumulator.cachedTokens += result.cachedTokens;
+  } else {
+    accumulator.hasCompleteCachedTokens = false;
+  }
+
+  if (typeof result.estimatedCostUsd === 'number') {
+    accumulator.estimatedCostUsd += result.estimatedCostUsd;
+  } else {
+    accumulator.hasCompleteEstimatedCost = false;
+  }
+
+  if (result.rawUsage != null) {
+    accumulator.rawUsage.push({
+      provider: result.provider,
+      model: result.model,
+      usage: result.rawUsage,
+    });
+  }
+}
+
+function buildRunUsageUpdate(
+  accumulator: RunUsageAccumulator,
+  provider: AIProvider | null,
+  model: string | null,
+) {
+  return {
+    provider,
+    model_used: model,
+    token_count: accumulator.totalTokens,
+    input_tokens:
+      accumulator.callCount > 0 && accumulator.hasCompleteInputTokens
+        ? accumulator.inputTokens
+        : null,
+    output_tokens:
+      accumulator.callCount > 0 && accumulator.hasCompleteOutputTokens
+        ? accumulator.outputTokens
+        : null,
+    cached_tokens:
+      accumulator.callCount > 0 && accumulator.hasCompleteCachedTokens
+        ? accumulator.cachedTokens
+        : null,
+    estimated_cost_usd:
+      accumulator.callCount > 0 && accumulator.hasCompleteEstimatedCost
+        ? Math.round(accumulator.estimatedCostUsd * 1_000_000) / 1_000_000
+        : null,
+    raw_usage: accumulator.rawUsage.length > 0 ? accumulator.rawUsage : null,
+  };
 }
 
 // ============================================================================
@@ -820,53 +962,75 @@ ${chunk.content}
   }).join('\n\n');
 }
 
-// Limit chunks to fit within token budget
-// Groq limit: ~12k tokens, we use ~8k for content to leave room for prompt + response
-// Rough estimate: 1 token ≈ 4 chars
-function selectChunksWithinTokenBudget(
+function buildGenerationPayload(params: {
+  objective: string;
+  targetCount: number;
+  chunks: ChunkWithContext[];
+  promptConfig: { system: string; user: (chunks: string, targetCount: number) => string } | null;
+  digestContext?: string | null;
+}) {
+  if (params.objective === 'flashcards') {
+    const context = params.digestContext || formatFlashcardContext(params.chunks);
+    const flashcardsPrompt = getFlashcardsPrompt(params.targetCount, context);
+    return {
+      system: flashcardsPrompt.system,
+      user: flashcardsPrompt.user,
+      promptCacheKey: flashcardsPrompt.promptCacheKey,
+      maxOutputTokens: estimateFlashcardsMaxOutputTokens(params.targetCount),
+    };
+  }
+
+  const formattedChunks = formatChunksForPrompt(params.chunks);
+  return {
+    system: params.promptConfig!.system,
+    user: params.promptConfig!.user(formattedChunks, params.targetCount),
+    promptCacheKey: undefined,
+    maxOutputTokens: undefined,
+  };
+}
+
+function selectPromptChunksForRun(
   chunks: ChunkWithContext[],
-  maxChars: number = 32000 // ~8k tokens
+  objective: string,
+  model: AIProvider,
+  reduced: boolean = false,
 ): ChunkWithContext[] {
-  const selected: ChunkWithContext[] = [];
-  let totalChars = 0;
-  
-  // Prioritize chunks evenly distributed across the document
-  // to get a representative sample from all sections
-  const step = Math.max(1, Math.floor(chunks.length / 10)); // Take ~10 samples
-  const priorityIndices = new Set<number>();
-  
-  for (let i = 0; i < chunks.length; i += step) {
-    priorityIndices.add(i);
-  }
-  
-  // First pass: add priority chunks
-  for (const idx of priorityIndices) {
-    const chunk = chunks[idx];
-    const chunkSize = chunk.content.length + 100; // +100 for metadata
-    if (totalChars + chunkSize <= maxChars) {
-      selected.push(chunk);
-      totalChars += chunkSize;
-    }
-  }
-  
-  // Second pass: fill remaining budget with other chunks
-  for (let i = 0; i < chunks.length && totalChars < maxChars; i++) {
-    if (!priorityIndices.has(i)) {
-      const chunk = chunks[i];
-      const chunkSize = chunk.content.length + 100;
-      if (totalChars + chunkSize <= maxChars) {
-        selected.push(chunk);
-        totalChars += chunkSize;
-      }
-    }
-  }
-  
-  // Sort by position to maintain document order
-  selected.sort((a, b) => a.position - b.position);
-  
-  log('Truncate', `Selected ${selected.length}/${chunks.length} chunks (${totalChars} chars, ~${Math.round(totalChars/4)} tokens)`);
-  
+  const policy = getPromptPolicy(objective, model, reduced);
+  const truncatedChunks = chunks.map(chunk => ({
+    ...chunk,
+    content: truncateChunk(chunk.content, policy.maxCharsPerChunk),
+  }));
+  const selected = selectPromptChunksWithinTokenBudget(
+    truncatedChunks,
+    policy.maxCharsTotal,
+  ).slice(0, policy.maxChunks);
+  const totalChars = selected.reduce((sum, chunk) => sum + chunk.content.length + 100, 0);
+
+  log(
+    'Truncate',
+    `Selected ${selected.length}/${chunks.length} chunks (${totalChars} chars) using ${objective}:${model}${reduced ? ':reduced' : ''}`,
+  );
+
   return selected;
+}
+
+async function recordClassifiedProviderFailure(
+  model: AIProvider,
+  error: unknown,
+): Promise<{ errorCode: AIErrorCode; httpStatus?: number }> {
+  const httpStatus = extractHttpStatus(error);
+  const errorCode = classifyAIError(error, httpStatus);
+  await recordAIFailureClassified(model, errorCode);
+  return { errorCode, httpStatus };
+}
+
+function finalizeRunUpdate(update: Record<string, unknown>) {
+  return {
+    ...update,
+    lease_expires_at: null,
+    processing_node: null,
+    updated_at: Date.now(),
+  };
 }
 
 function parseAIResponse(content: string): unknown[] {
@@ -979,21 +1143,88 @@ function parseAIResponse(content: string): unknown[] {
   throw new Error(`Failed to parse AI response - no valid questions found`);
 }
 
-function selectModel(objective: RunObjective, preference: string): 'groq' | 'gemini' {
-  // If user has a preference, use it
-  if (preference === 'groq') return 'groq';
-  if (preference === 'gemini') return 'gemini';
-  
-  // Auto-routing based on objective
-  switch (objective) {
-    case 'flashcards':
-      return 'groq'; // Fast, good for simple content
-    case 'questoes_banca':
-    case 'logica_juridica':
-      return 'gemini'; // Better reasoning for complex questions
-    default:
-      return 'groq';
+function sleep(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function fetchSourceChunksWithRetry(
+  supabase: SupabaseClient,
+  sourceId: string,
+  sourceName: string,
+  renewLease?: (context: string) => Promise<void>,
+): Promise<ChunkWithContext[]> {
+  for (let attempt = 0; attempt <= CHUNK_LOOKUP_RETRY_DELAYS_MS.length; attempt++) {
+    await renewLease?.(`chunk-lookup-${attempt + 1}`);
+
+    const { data: sourceChunks } = await supabase
+      .from("source_chunks")
+      .select(`
+        position,
+        chunks:chunk_id (
+          id,
+          content,
+          page_number
+        )
+      `)
+      .eq("source_id", sourceId)
+      .order("position", { ascending: true });
+
+    const sourceChunkCount = sourceChunks?.length ?? 0;
+    const missingJoinedChunks = (sourceChunks ?? []).filter(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (sc: any) => !sc.chunks || !sc.chunks.id || !sc.chunks.content,
+    ).length;
+
+    log(
+      'Chunks',
+      `Lookup attempt ${attempt + 1}: source_chunks=${sourceChunkCount}, missing_joins=${missingJoinedChunks}`,
+    );
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const chunks: ChunkWithContext[] = (sourceChunks ?? []).flatMap((sc: any) => {
+      if (!sc.chunks?.id || !sc.chunks?.content) return [];
+      return [{
+        id: sc.chunks.id,
+        content: sc.chunks.content,
+        pageNumber: sc.chunks.page_number,
+        sourceId,
+        sourceName,
+        position: sc.position,
+      }];
+    });
+
+    if (chunks.length > 0) {
+      if (missingJoinedChunks > 0) {
+        log(
+          'Chunks',
+          `Proceeding with ${chunks.length} resolved chunks after ${missingJoinedChunks} null joins`,
+        );
+      }
+      return chunks;
+    }
+
+    if (attempt < CHUNK_LOOKUP_RETRY_DELAYS_MS.length) {
+      await sleep(CHUNK_LOOKUP_RETRY_DELAYS_MS[attempt]);
+    }
   }
+
+  throw new Error(`Transient chunk lookup: no chunks found for this source (${sourceId})`);
+}
+
+function selectModel(runId: string, objective: RunObjective, preference: string) {
+  return resolveRunProviderModel({
+    runId,
+    objective,
+    preference,
+  });
+}
+
+function normalizeParsedItems(objective: string, items: unknown[]): unknown[] {
+  if (objective === 'flashcards') {
+    return normalizeCompactFlashcards(items);
+  }
+
+  return items;
 }
 
 // ============================================================================
@@ -1136,9 +1367,19 @@ const MAX_TOKENS_PER_RUN = 50_000;
 
 export async function POST(request: NextRequest) {
   const overallStart = Date.now();
+  let runId = '';
+  let slotKey: ProviderSlotKey | null = null;
+  let activeProcessingNode: string | null = null;
+  let leaseHeartbeat: NodeJS.Timeout | null = null;
+  let ownsProviderSlot = false;
 
   try {
-    const { runId } = await request.json();
+    const requestBody = await request.json();
+    runId = requestBody?.runId;
+    const requestedLeaseOwner =
+      typeof requestBody?.leaseOwner === 'string' ? requestBody.leaseOwner : null;
+    const requestedSlotKey =
+      typeof requestBody?.slotKey === 'string' ? requestBody.slotKey as ProviderSlotKey : null;
 
     if (!runId) {
       return NextResponse.json({ error: "runId is required" }, { status: 400 });
@@ -1171,6 +1412,39 @@ export async function POST(request: NextRequest) {
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
     const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
     const supabase = createClient(supabaseUrl, supabaseKey);
+    const directProcessingNode = `processor-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    const renewLease = async (context: string) => {
+      if (!activeProcessingNode || !runId) return;
+
+      const leaseExpiresAt = Date.now() + RUN_LEASE_MS;
+      const { data: renewed, error } = await supabase
+        .from('runs')
+        .update({
+          lease_expires_at: leaseExpiresAt,
+          updated_at: Date.now(),
+        })
+        .eq('id', runId)
+        .eq('status', 'processando')
+        .eq('processing_node', activeProcessingNode)
+        .select('id')
+        .single();
+
+      if (error || !renewed) {
+        log('Lease', `Heartbeat skipped during ${context}: ${error?.message || 'lease not owned'}`);
+        return;
+      }
+
+      if (slotKey && ownsProviderSlot) {
+        const slotRefreshed =
+          (await renewSlot(slotKey, runId)) || (await acquireSlot(slotKey, runId));
+        if (!slotRefreshed) {
+          throw new Error(`Provider slot heartbeat lost capacity during ${context}`);
+        }
+      }
+
+      log('Lease', `Lease renewed during ${context} until ${leaseExpiresAt}`);
+    };
 
     // ========================================================================
     // 1. GET RUN AND VALIDATE
@@ -1190,11 +1464,19 @@ export async function POST(request: NextRequest) {
     // ========================================================================
     // IDEMPOTENCY GUARD: Accept pending runs, or stuck processing runs
     // ========================================================================
+    const now = Date.now();
     const currentAttempts: number = run.attempt_count ?? 0;
+    const currentProviderAttempts: number = run.provider_attempt_count ?? 0;
+    slotKey = requestedSlotKey ?? resolveSlotKey(run.objective, run.model_preference || 'auto', run.id);
 
     if (run.status === 'concluido') {
       log('Skip', 'Run already completed');
       return NextResponse.json({ error: 'Run already concluido' }, { status: 400 });
+    }
+
+    if (run.status === 'base_insuficiente') {
+      log('Skip', 'Run already marked as base_insuficiente');
+      return NextResponse.json({ error: 'Run already marked as base_insuficiente' }, { status: 400 });
     }
 
     if (run.status === 'erro' && currentAttempts >= MAX_ATTEMPTS) {
@@ -1202,21 +1484,74 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Run permanently failed' }, { status: 400 });
     }
 
+    if (
+      (run.status === 'queued' || run.status === 'retry_wait') &&
+      typeof run.next_attempt_at === 'number' &&
+      run.next_attempt_at > now
+    ) {
+      log('Skip', `Run is scheduled for later at ${run.next_attempt_at}`);
+      return NextResponse.json({ error: 'Run not ready yet' }, { status: 409 });
+    }
+
     if (run.status === 'processando') {
-      const startedAt = run.started_at ?? 0;
-      const elapsed = Date.now() - startedAt;
-      if (elapsed < STUCK_PROCESSING_THRESHOLD_MS) {
-        log('Skip', `Run is actively processing (started ${Math.round(elapsed / 1000)}s ago)`);
-        return NextResponse.json({ error: 'Run is actively processing' }, { status: 409 });
+      const startedAt = typeof run.started_at === 'number' ? run.started_at : null;
+      const hasActiveLease =
+        typeof run.lease_expires_at === 'number' && run.lease_expires_at > now;
+      let elapsed = 0;
+      if (hasActiveLease) {
+        if (!requestedLeaseOwner || run.processing_node !== requestedLeaseOwner) {
+          log('Skip', 'Run already has an active lease owned by another processor');
+          return NextResponse.json({ error: 'Run already has an active lease' }, { status: 409 });
+        }
+
+        if (!startedAt) {
+          log('Skip', 'Run has an active lease without started_at; refusing duplicate processor entry');
+          return NextResponse.json({ error: 'Run lease already active' }, { status: 409 });
+        }
+
+        elapsed = now - startedAt;
+        if (elapsed < STUCK_PROCESSING_THRESHOLD_MS) {
+          const processorNode = `proc:${requestedLeaseOwner}`;
+          const { data: claimedLease, error: claimError } = await supabase
+            .from('runs')
+            .update({
+              processing_node: processorNode,
+              lease_expires_at: now + RUN_LEASE_MS,
+              updated_at: now,
+            })
+            .eq('id', runId)
+            .eq('status', 'processando')
+            .eq('processing_node', requestedLeaseOwner)
+            .select('id')
+            .single();
+
+          if (claimError || !claimedLease) {
+            log('Skip', 'Run lease was already claimed by another processor instance');
+            return NextResponse.json({ error: 'Run already being processed' }, { status: 409 });
+          }
+
+          activeProcessingNode = processorNode;
+          log('Lease', 'Processor claimed dispatcher lease via compare-and-set');
+        } else {
+          log('Recover', `Run stuck in processando for ${Math.round(elapsed / 1000)}s - reprocessing`);
+        }
+      } else {
+        log('Recover', 'Run was processando without a valid lease - reprocessing');
       }
-      log('Recover', `Run stuck in processando for ${Math.round(elapsed / 1000)}s — reprocessing`);
     }
 
     if (currentAttempts >= MAX_ATTEMPTS) {
       log('MaxAttempts', `Run exhausted ${MAX_ATTEMPTS} attempts — marking as erro`);
       await supabase
         .from('runs')
-        .update({ status: 'erro', error_message: `Excedeu limite de ${MAX_ATTEMPTS} tentativas`, updated_at: Date.now() })
+        .update(
+          finalizeRunUpdate({
+            status: 'erro',
+            error_message: `Excedeu limite de ${MAX_ATTEMPTS} tentativas`,
+            next_attempt_at: null,
+            completed_at: Date.now(),
+          }),
+        )
         .eq('id', runId);
       return NextResponse.json({ error: 'Max attempts exceeded' }, { status: 400 });
     }
@@ -1226,13 +1561,7 @@ export async function POST(request: NextRequest) {
     // ========================================================================
     // DEFENSE-IN-DEPTH: Verify entitlement before processing
     // ========================================================================
-    const { data: ownerProfile } = await supabase
-      .from('profiles')
-      .select('is_pro, subscription_status, subscription_period_end, admin_override_pro')
-      .eq('id', run.user_id)
-      .single();
-
-    const ownerIsPro = hasProAccess(ownerProfile);
+    const ownerIsPro = await getEffectiveProAccess(supabase, run.user_id);
     const monthlyCounts = await getMonthlyRunCounts(supabase, run.user_id);
     const entitlementCheck = authorizeRunCreation(
       ownerIsPro,
@@ -1245,7 +1574,14 @@ export async function POST(request: NextRequest) {
       log('Entitlement', `Blocked: ${entitlementCheck.reason}`);
       await supabase
         .from('runs')
-        .update({ status: 'erro', error_message: entitlementCheck.reason, updated_at: Date.now() })
+        .update(
+          finalizeRunUpdate({
+            status: 'erro',
+            error_message: entitlementCheck.reason,
+            next_attempt_at: null,
+            completed_at: Date.now(),
+          }),
+        )
         .eq('id', runId);
       return NextResponse.json({ error: entitlementCheck.reason }, { status: 403 });
     }
@@ -1253,17 +1589,186 @@ export async function POST(request: NextRequest) {
     // ========================================================================
     // 2. UPDATE STATUS TO PROCESSING
     // ========================================================================
-    
-    await supabase
-      .from("runs")
-      .update({ 
-        status: "processando", 
-        started_at: Date.now(),
-        updated_at: Date.now() 
-      })
-      .eq("id", runId);
+
+    if (!activeProcessingNode) {
+      const claimedAt = Date.now();
+      const claimPayload = {
+        status: "processando",
+        started_at: claimedAt,
+        lease_expires_at: claimedAt + RUN_LEASE_MS,
+        processing_node: directProcessingNode,
+        next_attempt_at: null,
+        updated_at: claimedAt,
+      };
+      const claimBuilder = supabase
+        .from("runs")
+        .update(claimPayload)
+        .eq("id", runId);
+      const claimResult = run.status === 'processando'
+        ? await claimBuilder.eq("status", "processando").select('id').single()
+        : await claimBuilder.in("status", ["queued", "retry_wait"]).select('id').single();
+      const { data: claimedRun, error: claimRunError } = claimResult;
+
+      if (claimRunError || !claimedRun) {
+        log('Skip', 'Run could not be claimed for processing');
+        return NextResponse.json({ error: 'Run could not be claimed' }, { status: 409 });
+      }
+
+      activeProcessingNode = directProcessingNode;
+      log('Lease', `Processor claimed ${run.status} run directly`);
+    }
+
+    if (!slotKey) {
+      throw new Error('Provider slot key missing for run');
+    }
+
+    let slotAcquired = await acquireSlot(slotKey, runId);
+    if (!slotAcquired) {
+      const fallbackSlotKey = getFallbackSlotKey(run.objective, run.model_preference, slotKey);
+      if (fallbackSlotKey) {
+        const fallbackAcquired = await acquireSlot(fallbackSlotKey, runId);
+        if (fallbackAcquired) {
+          log('Failover', `Provider slot moved from ${slotKey} to ${fallbackSlotKey} before processing`);
+          slotKey = fallbackSlotKey;
+          slotAcquired = true;
+        }
+      }
+    }
+
+    if (!slotAcquired) {
+      await supabase
+        .from('runs')
+        .update({
+          status: 'queued',
+          started_at: null,
+          lease_expires_at: null,
+          processing_node: null,
+          next_attempt_at: Date.now(),
+          updated_at: Date.now(),
+        })
+        .eq('id', runId)
+        .eq('status', 'processando')
+        .eq('processing_node', activeProcessingNode);
+      log('Lease', 'Processor could not secure provider slot after claiming the run');
+      return NextResponse.json({ error: 'Provider capacity exhausted' }, { status: 409 });
+    }
+
+    ownsProviderSlot = true;
 
     log('Status', 'Updated to "processando"');
+
+    leaseHeartbeat = setInterval(() => {
+      void renewLease('interval').catch(error => {
+        log(
+          'Lease',
+          `Lease heartbeat failed during interval: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+    }, RUN_LEASE_HEARTBEAT_MS);
+    leaseHeartbeat.unref?.();
+
+    let currentModel: AIProvider = slotKey.startsWith('gemini')
+      ? 'gemini'
+      : slotKey.startsWith('openai')
+        ? 'openai'
+        : 'groq';
+    let effectiveModel: AIProvider = currentModel;
+    let currentModelId = getDefaultModelForProvider(currentModel, run.objective);
+    let effectiveModelId = currentModelId;
+    const usageAccumulator = createRunUsageAccumulator();
+    let sourceDigestVersionUsed: string | null = null;
+
+    const switchFlashcardsProviderToOpenAI = async (reason: string): Promise<boolean> => {
+      if (!slotKey) {
+        return false;
+      }
+
+      const nextSlotKey = getFallbackSlotKey(run.objective, run.model_preference, slotKey);
+      if (!nextSlotKey) {
+        return false;
+      }
+
+      const nextProvider: AIProvider = 'openai';
+      const nextModelId = getDefaultModelForProvider(nextProvider, run.objective);
+      const circuitCheck = await checkCircuitBreaker(nextProvider);
+      if (!circuitCheck.allowed) {
+        log('Failover', `OpenAI failover blocked: ${circuitCheck.reason}`);
+        return false;
+      }
+
+      const fallbackAcquired = await acquireSlot(nextSlotKey, runId);
+      if (!fallbackAcquired) {
+        log('Failover', `OpenAI failover slot unavailable for ${reason}`);
+        return false;
+      }
+
+      if (ownsProviderSlot && slotKey) {
+        await releaseSlot(slotKey, runId);
+      }
+
+      slotKey = nextSlotKey;
+      currentModel = nextProvider;
+      currentModelId = nextModelId;
+      effectiveModel = nextProvider;
+      effectiveModelId = nextModelId;
+
+      await supabase
+        .from('runs')
+        .update({
+          provider: effectiveModel,
+          model_used: effectiveModelId,
+          updated_at: Date.now(),
+        })
+        .eq('id', runId);
+
+      log('Failover', `Switched flashcards provider from Groq to OpenAI (${effectiveModelId}) due to ${reason}`);
+      return true;
+    };
+
+    const callProviderWithFailover = async (
+      provider: AIProvider,
+      model: string,
+      systemPrompt: string,
+      userPrompt: string,
+      promptCacheKey?: string,
+      maxOutputTokens?: number,
+      renewLeaseFn?: (context: string) => Promise<void>,
+      leaseContext: string = 'provider-call',
+    ): Promise<AICallResult> => {
+      try {
+        return await callProvider(
+          provider,
+          model,
+          systemPrompt,
+          userPrompt,
+          promptCacheKey,
+          maxOutputTokens,
+          renewLeaseFn,
+          leaseContext,
+        );
+      } catch (error) {
+        const httpStatus = extractHttpStatus(error);
+        const errorCode = classifyAIError(error, httpStatus);
+        if (shouldFailoverGroqFlashcards(run.objective, run.model_preference, provider, errorCode)) {
+          await recordClassifiedProviderFailure(provider, error);
+          const switched = await switchFlashcardsProviderToOpenAI(`${errorCode}:${leaseContext}`);
+          if (switched) {
+            return callProvider(
+              effectiveModel,
+              effectiveModelId,
+              systemPrompt,
+              userPrompt,
+              promptCacheKey,
+              maxOutputTokens,
+              renewLeaseFn,
+              `${leaseContext}:openai-failover`,
+            );
+          }
+        }
+
+        throw error;
+      }
+    };
 
     try {
       // ======================================================================
@@ -1286,34 +1791,14 @@ export async function POST(request: NextRequest) {
       }
 
       log('Source', `Found source: ${source.filename}`);
+      await renewLease('source-loaded');
 
-      const { data: sourceChunks } = await supabase
-        .from("source_chunks")
-        .select(`
-          position,
-          chunks:chunk_id (
-            id,
-            content,
-            page_number
-          )
-        `)
-        .eq("source_id", run.source_id)
-        .order("position", { ascending: true });
-
-      if (!sourceChunks || sourceChunks.length === 0) {
-        throw new Error("No chunks found for this source");
-      }
-
-      // Format chunks with context
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const chunks: ChunkWithContext[] = sourceChunks.map((sc: any) => ({
-        id: sc.chunks.id,
-        content: sc.chunks.content,
-        pageNumber: sc.chunks.page_number,
-        sourceId: run.source_id,
-        sourceName: source.filename,
-        position: sc.position,
-      }));
+      const chunks = await fetchSourceChunksWithRetry(
+        supabase,
+        run.source_id,
+        source.filename,
+        renewLease,
+      );
 
       log('Chunks', `Found ${chunks.length} chunks for processing`);
 
@@ -1321,25 +1806,37 @@ export async function POST(request: NextRequest) {
       // 4. SELECT MODEL AND EXECUTE
       // ======================================================================
 
-      const currentModel = selectModel(run.objective, run.model_preference);
-      log('Model', `Selected model: ${currentModel}`);
+      const selectedProvider = slotKey === 'openai:flashcards'
+        ? {
+            provider: 'openai' as AIProvider,
+            model: getDefaultModelForProvider('openai', run.objective),
+          }
+        : selectModel(runId, run.objective, run.model_preference);
+      currentModel = selectedProvider.provider;
+      currentModelId = selectedProvider.model;
+      effectiveModel = currentModel;
+      effectiveModelId = currentModelId;
+      log('Model', `Selected provider: ${currentModel} (${currentModelId})`);
 
       // ── Cost guard: daily quota ─────────────────────────────────────────
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('is_pro, subscription_status, subscription_period_end, admin_override_pro')
-        .eq('id', run.user_id)
-        .single();
+      const runOwnerIsPro = await getEffectiveProAccess(supabase, run.user_id);
 
       const quotaCheck = await checkDailyRunQuota(
         run.user_id,
-        hasProAccess(profile)
+        runOwnerIsPro
       );
       if (!quotaCheck.allowed) {
         log('CostGuard', `Daily quota exceeded for user ${run.user_id}`);
         await supabase
           .from('runs')
-          .update({ status: 'erro', error_message: quotaCheck.reason, updated_at: Date.now() })
+          .update(
+            finalizeRunUpdate({
+              status: 'erro',
+              error_message: quotaCheck.reason,
+              next_attempt_at: null,
+              completed_at: Date.now(),
+            }),
+          )
           .eq('id', runId);
         return NextResponse.json({ error: quotaCheck.reason }, { status: 429 });
       }
@@ -1347,38 +1844,87 @@ export async function POST(request: NextRequest) {
       // ── Cost guard: circuit breaker ─────────────────────────────────────
       const circuitCheck = await checkCircuitBreaker(currentModel);
       if (!circuitCheck.allowed) {
-        log('CostGuard', `Circuit breaker open for ${currentModel}`);
-        await supabase
-          .from('runs')
-          .update({ status: 'erro', error_message: circuitCheck.reason, updated_at: Date.now() })
+        if (currentModel === 'groq' && canFailoverFlashcardsToOpenAI(run.objective, run.model_preference)) {
+          const switched = await switchFlashcardsProviderToOpenAI(`circuit_breaker:${currentModel}`);
+          if (switched) {
+            log('Failover', `Circuit breaker redirected flashcards to ${effectiveModel} (${effectiveModelId})`);
+          } else {
+            log('CostGuard', `Circuit breaker open for ${currentModel}`);
+            await supabase
+              .from('runs')
+              .update(
+                finalizeRunUpdate({
+                  status: 'retry_wait',
+                  started_at: null,
+                  error_message: circuitCheck.reason,
+                  last_error_code: 'provider_unavailable',
+                  last_error_provider: currentModel,
+                  last_error_at: Date.now(),
+                  next_attempt_at: Date.now() + Math.max(circuitCheck.retryAfterMs ?? 60_000, 15_000),
+                }),
+              )
+              .eq('id', runId);
+            return NextResponse.json({ error: circuitCheck.reason, retry: true }, { status: 503 });
+          }
+        } else {
+          log('CostGuard', `Circuit breaker open for ${currentModel}`);
+          await supabase
+            .from('runs')
+          .update(
+            finalizeRunUpdate({
+              status: 'retry_wait',
+              started_at: null,
+              error_message: circuitCheck.reason,
+              last_error_code: 'provider_unavailable',
+              last_error_provider: currentModel,
+              last_error_at: Date.now(),
+              next_attempt_at: Date.now() + Math.max(circuitCheck.retryAfterMs ?? 60_000, 15_000),
+            }),
+          )
           .eq('id', runId);
-        return NextResponse.json({ error: circuitCheck.reason }, { status: 503 });
+          return NextResponse.json({ error: circuitCheck.reason, retry: true }, { status: 503 });
+        }
       }
 
       // ── Cost guard: weekly token budget ──────────────────────────────────
       const tokenBudget = await checkWeeklyTokenBudget(
         run.user_id,
-        hasProAccess(profile),
+        runOwnerIsPro,
       );
       if (!tokenBudget.allowed) {
         log('CostGuard', `Weekly token budget exceeded for user ${run.user_id} (${tokenBudget.tokensUsed}/${tokenBudget.tokenLimit})`);
         await supabase
           .from('runs')
-          .update({ status: 'erro', error_message: tokenBudget.reason, updated_at: Date.now() })
+          .update(
+            finalizeRunUpdate({
+              status: 'erro',
+              error_message: tokenBudget.reason,
+              next_attempt_at: null,
+              completed_at: Date.now(),
+            }),
+          )
           .eq('id', runId);
         return NextResponse.json({ error: tokenBudget.reason }, { status: 429 });
       }
 
       // Degrade model if approaching token budget (Pro soft cap)
-      let effectiveModel = currentModel;
+      effectiveModel = currentModel;
       if (tokenBudget.shouldDegradeModel && currentModel === 'gemini') {
         log('CostGuard', `Token budget at ${Math.round(tokenBudget.tokensUsed / tokenBudget.tokenLimit * 100)}% — downgrading from Gemini to Groq`);
         effectiveModel = 'groq';
+        effectiveModelId = getDefaultModelForProvider('groq', run.objective);
       }
 
       await supabase
         .from("runs")
-        .update({ attempt_count: currentAttempts + 1, model_used: effectiveModel, updated_at: Date.now() })
+        .update({
+          attempt_count: currentAttempts + 1,
+          provider_attempt_count: currentProviderAttempts + 1,
+          provider: effectiveModel,
+          model_used: effectiveModelId,
+          source_digest_version: null,
+          updated_at: Date.now(),
+        })
         .eq("id", runId);
 
       // ======================================================================
@@ -1387,9 +1933,11 @@ export async function POST(request: NextRequest) {
 
       let totalTokensUsed = 0;
       let result: unknown[] = [];
+      const useReducedPromptBudget = run.last_error_code === 'payload_too_large';
 
       // For questoes_banca, use dynamic per-banca prompt; others use static PROMPTS
       const isQuestoesBanca = run.objective === 'questoes_banca';
+      const isFlashcards = run.objective === 'flashcards';
 
       // ── PHASE 0: Base Diagnosis (questoes_banca only) ────────────────
       let diagnosis: BaseDiagnosis = DEFAULT_DIAGNOSIS;
@@ -1407,8 +1955,11 @@ export async function POST(request: NextRequest) {
           const diagResult = await callGroq(
             DIAGNOSE_BASE_PROMPT.system,
             DIAGNOSE_BASE_PROMPT.user(diagPreview),
+            renewLease,
+            'diagnosis',
           );
           totalTokensUsed += diagResult.totalTokens;
+          accumulateRunUsage(usageAccumulator, diagResult);
           await recordAISuccess('groq');
 
           const diagParsed = JSON.parse(
@@ -1455,25 +2006,30 @@ export async function POST(request: NextRequest) {
             log('BaseInsuficiente', motivo);
             await supabase
               .from('runs')
-              .update({
-                status: 'base_insuficiente',
-                error_message: motivo,
-                token_count: totalTokensUsed,
-                updated_at: Date.now(),
-              })
+              .update(
+                finalizeRunUpdate({
+                  status: 'base_insuficiente',
+                  error_message: motivo,
+                  ...buildRunUsageUpdate(usageAccumulator, effectiveModel, effectiveModelId),
+                  next_attempt_at: null,
+                  completed_at: Date.now(),
+                }),
+              )
               .eq('id', runId);
             return NextResponse.json({ status: 'base_insuficiente', motivo });
           }
         } catch (diagErr) {
           log('Diagnosis', `Diagnosis failed, using conservative defaults: ${diagErr instanceof Error ? diagErr.message : 'unknown'}`);
-          await recordAIFailure('groq');
+          await recordClassifiedProviderFailure('groq', diagErr);
           // Continue with DEFAULT_DIAGNOSIS (limitada)
         }
       }
 
       const promptConfig = isQuestoesBanca
         ? getBancaPrompt(run.banca ?? null, dificuldadeEfetiva, diagnosis)
-        : PROMPTS[run.objective as keyof typeof PROMPTS];
+        : isFlashcards
+          ? null
+          : PROMPTS[run.objective as keyof typeof PROMPTS];
 
       // Graduated over-generate based on banca + difficulty + base quality
       // High multipliers needed because Phase B grounded review rejects ~50%
@@ -1489,11 +2045,51 @@ export async function POST(request: NextRequest) {
         }
       }
       const generationTarget = Math.ceil(run.target_count * overGenerateMultiplier);
-
       const validChunkIdsForValidation = new Set(chunks.map(c => c.id));
       const chunkContentMap = new Map(chunks.map(c => [c.id, c.content]));
+      let sourceDigest: SourceDigestRow | null = null;
+      let flashcardsDigestContext: string | null = null;
 
-      const useMapReduce = chunks.length >= 15; // Only worth it for large docs
+      if (isFlashcards) {
+        const { data: digestRow } = await supabase
+          .from('source_digests')
+          .select('*')
+          .eq('source_id', run.source_id)
+          .order('updated_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (digestRow) {
+          sourceDigest = digestRow as SourceDigestRow;
+          flashcardsDigestContext = formatDigestForFlashcards(
+            sourceDigest.content_json,
+            effectiveModel,
+            useReducedPromptBudget,
+          );
+
+          if (flashcardsDigestContext) {
+            sourceDigestVersionUsed = sourceDigest.version;
+            log('Digest', `Using source digest ${sourceDigest.version} for flashcards`);
+          } else {
+            log('Digest', `Digest ${sourceDigest.version} found but unusable, falling back to chunks`);
+            sourceDigest = null;
+          }
+        } else {
+          log('Digest', 'No source digest found, falling back to chunks');
+        }
+      }
+
+      if (sourceDigestVersionUsed) {
+        await supabase
+          .from('runs')
+          .update({
+            source_digest_version: sourceDigestVersionUsed,
+            updated_at: Date.now(),
+          })
+          .eq('id', runId);
+      }
+
+      const useMapReduce = !isFlashcards && chunks.length >= 15; // Flashcards should stay single-call and cheap
 
       if (useMapReduce) {
         // ── PHASE 1 (MAP): Extract topics cheaply via Groq ─────────────
@@ -1511,8 +2107,11 @@ export async function POST(request: NextRequest) {
           const mapResult = await callGroq(
             TOPIC_EXTRACTION_PROMPT.system,
             TOPIC_EXTRACTION_PROMPT.user(previewText),
+            renewLease,
+            'topic-map',
           );
           totalTokensUsed += mapResult.totalTokens;
+          accumulateRunUsage(usageAccumulator, mapResult);
           await recordAISuccess('groq');
 
           const parsed = JSON.parse(
@@ -1530,7 +2129,7 @@ export async function POST(request: NextRequest) {
           log('MAP', `Extracted ${topics.length} topics`);
         } catch (mapErr) {
           log('MAP', `Topic extraction failed, falling back to single-call: ${mapErr instanceof Error ? mapErr.message : 'unknown'}`);
-          await recordAIFailure('groq');
+          await recordClassifiedProviderFailure('groq', mapErr);
           // Fall through to single-call fallback below
         }
 
@@ -1549,11 +2148,16 @@ export async function POST(request: NextRequest) {
             if (result.length >= generationTarget) break;
 
             // Select relevant chunks for this topic via TF-IDF ranking
-            const maxCharsForTopic = effectiveModel === 'groq' ? 28000 : 70000;
+            const topicPolicy = getPromptPolicy(
+              run.objective,
+              effectiveModel,
+              useReducedPromptBudget,
+            );
+            const maxCharsForTopic = topicPolicy.maxCharsTotal;
             const topicChunks = rankChunksByRelevance(
               chunks,
               topic.keywords,
-              8, // max 8 chunks per topic
+              topicPolicy.maxChunks,
               (c: ChunkWithContext) => c.content,
               maxCharsForTopic,
             );
@@ -1563,16 +2167,32 @@ export async function POST(request: NextRequest) {
               continue;
             }
 
-            const formattedTopicChunks = formatChunksForPrompt(topicChunks);
+            const preparedTopicChunks = topicChunks.map(chunk => ({
+              ...chunk,
+              content: truncateChunk(chunk.content, topicPolicy.maxCharsPerChunk),
+            }));
             const remaining = Math.min(itemsPerTopic, generationTarget - result.length);
+            const generationPayload = buildGenerationPayload({
+              objective: run.objective,
+              targetCount: remaining,
+              chunks: preparedTopicChunks,
+              promptConfig,
+              digestContext: flashcardsDigestContext,
+            });
 
             try {
-              const aiCall = effectiveModel === 'groq' ? callGroq : callGemini;
-              const topicResult = await aiCall(
-                promptConfig.system,
-                promptConfig.user(formattedTopicChunks, remaining),
+              const topicResult = await callProvider(
+                effectiveModel,
+                effectiveModelId,
+                generationPayload.system,
+                generationPayload.user,
+                generationPayload.promptCacheKey,
+                generationPayload.maxOutputTokens,
+                renewLease,
+                'topic-generation',
               );
               totalTokensUsed += topicResult.totalTokens;
+              accumulateRunUsage(usageAccumulator, topicResult);
               await recordAISuccess(effectiveModel);
 
               // Check for base_insuficiente BEFORE parsing as array
@@ -1584,14 +2204,14 @@ export async function POST(request: NextRequest) {
                 }
               }
 
-              const topicItems = parseAIResponse(topicResult.text);
+              const topicItems = normalizeParsedItems(run.objective, parseAIResponse(topicResult.text));
               if (Array.isArray(topicItems) && topicItems.length > 0) {
                 result.push(...topicItems);
                 log('REDUCE', `Topic "${topic.topic}": ${topicItems.length} items (total: ${result.length})`);
               }
             } catch (topicErr) {
               log('REDUCE', `Failed to generate for topic "${topic.topic}": ${topicErr instanceof Error ? topicErr.message : 'unknown'}`);
-              await recordAIFailure(effectiveModel);
+              await recordClassifiedProviderFailure(effectiveModel, topicErr);
               // Continue with other topics
             }
           }
@@ -1601,22 +2221,38 @@ export async function POST(request: NextRequest) {
       // ── FALLBACK: Single-call for small docs or if MAP failed ───────
       if (result.length === 0) {
         log('AI', `Single-call generation (${chunks.length} chunks)`);
-        const maxChars = effectiveModel === 'groq' ? 32000 : 80000;
-        const selectedChunks = selectChunksWithinTokenBudget(chunks, maxChars);
-        const formattedChunks = formatChunksForPrompt(selectedChunks);
+        const selectedChunks = selectPromptChunksForRun(
+          chunks,
+          run.objective,
+          effectiveModel,
+          useReducedPromptBudget,
+        );
+        const generationPayload = buildGenerationPayload({
+          objective: run.objective,
+          targetCount: generationTarget,
+          chunks: selectedChunks,
+          promptConfig,
+          digestContext: flashcardsDigestContext,
+        });
 
         const aiStart = Date.now();
         let aiResult: AICallResult;
         try {
-          const aiCall = effectiveModel === 'groq' ? callGroq : callGemini;
-          aiResult = await aiCall(
-            promptConfig.system,
-            promptConfig.user(formattedChunks, generationTarget),
+          aiResult = await callProviderWithFailover(
+            effectiveModel,
+            effectiveModelId,
+            generationPayload.system,
+            generationPayload.user,
+            generationPayload.promptCacheKey,
+            generationPayload.maxOutputTokens,
+            renewLease,
+            'single-generation',
           );
           totalTokensUsed += aiResult.totalTokens;
+          accumulateRunUsage(usageAccumulator, aiResult);
           await recordAISuccess(effectiveModel);
         } catch (aiErr) {
-          await recordAIFailure(effectiveModel);
+          await recordClassifiedProviderFailure(effectiveModel, aiErr);
           throw aiErr;
         }
 
@@ -1630,27 +2266,34 @@ export async function POST(request: NextRequest) {
             log('BaseInsuficiente', biCheck.motivo);
             await supabase
               .from('runs')
-              .update({
-                status: 'base_insuficiente',
-                error_message: biCheck.motivo,
-                token_count: totalTokensUsed,
-                updated_at: Date.now(),
-              })
+              .update(
+                finalizeRunUpdate({
+                  status: 'base_insuficiente',
+                  error_message: biCheck.motivo,
+                  ...buildRunUsageUpdate(usageAccumulator, effectiveModel, effectiveModelId),
+                  next_attempt_at: null,
+                  completed_at: Date.now(),
+                }),
+              )
               .eq('id', runId);
             return NextResponse.json({ status: 'base_insuficiente', motivo: biCheck.motivo });
           }
         }
 
-        const parsed = parseAIResponse(aiResult.text);
+        const parsed = normalizeParsedItems(run.objective, parseAIResponse(aiResult.text));
         if (Array.isArray(parsed) && parsed.length > 0) {
           result = parsed;
           log('AI', `First call produced ${result.length}/${generationTarget} items`);
         }
 
         // ── REFILL LOOP: if AI produced fewer than target, make additional calls ──
-        const MAX_REFILL_ROUNDS = 5;
+        const MAX_REFILL_ROUNDS = isFlashcards ? 1 : 5;
+        const shouldAttemptRefill = isFlashcards
+          ? result.length < Math.ceil(generationTarget * 0.6)
+          : true;
         let refillRound = 0;
         while (
+          shouldAttemptRefill &&
           result.length < generationTarget &&
           refillRound < MAX_REFILL_ROUNDS &&
           totalTokensUsed < MAX_TOKENS_PER_RUN
@@ -1660,14 +2303,31 @@ export async function POST(request: NextRequest) {
           log('Refill', `Round ${refillRound}: need ${deficit} more items (have ${result.length}/${generationTarget})`);
 
           try {
-            const refillChunks = selectChunksWithinTokenBudget(chunks, effectiveModel === 'groq' ? 32000 : 80000);
-            const formattedRefillChunks = formatChunksForPrompt(refillChunks);
-            const aiCall = effectiveModel === 'groq' ? callGroq : callGemini;
-            const refillResult = await aiCall(
-              promptConfig.system,
-              promptConfig.user(formattedRefillChunks, deficit),
+            const refillChunks = selectPromptChunksForRun(
+              chunks,
+              run.objective,
+              effectiveModel,
+              useReducedPromptBudget,
+            );
+            const refillPayload = buildGenerationPayload({
+              objective: run.objective,
+              targetCount: deficit,
+              chunks: refillChunks,
+              promptConfig,
+              digestContext: flashcardsDigestContext,
+            });
+            const refillResult = await callProviderWithFailover(
+              effectiveModel,
+              effectiveModelId,
+              refillPayload.system,
+              refillPayload.user,
+              refillPayload.promptCacheKey,
+              refillPayload.maxOutputTokens,
+              renewLease,
+              'refill-generation',
             );
             totalTokensUsed += refillResult.totalTokens;
+            accumulateRunUsage(usageAccumulator, refillResult);
             await recordAISuccess(effectiveModel);
 
             // Check for base_insuficiente
@@ -1679,7 +2339,7 @@ export async function POST(request: NextRequest) {
               }
             }
 
-            const refillParsed = parseAIResponse(refillResult.text);
+            const refillParsed = normalizeParsedItems(run.objective, parseAIResponse(refillResult.text));
             if (Array.isArray(refillParsed) && refillParsed.length > 0) {
               result.push(...refillParsed);
               log('Refill', `Round ${refillRound}: got ${refillParsed.length} more items (total: ${result.length})`);
@@ -1689,7 +2349,7 @@ export async function POST(request: NextRequest) {
             }
           } catch (refillErr) {
             log('Refill', `Round ${refillRound} failed: ${refillErr instanceof Error ? refillErr.message : 'unknown'}`);
-            await recordAIFailure(effectiveModel);
+            await recordClassifiedProviderFailure(effectiveModel, refillErr);
             break;
           }
         }
@@ -1698,10 +2358,13 @@ export async function POST(request: NextRequest) {
       // ── Save total token count ──────────────────────────────────────
       await supabase
         .from('runs')
-        .update({ token_count: totalTokensUsed, updated_at: Date.now() })
+        .update({
+          ...buildRunUsageUpdate(usageAccumulator, effectiveModel, effectiveModelId),
+          updated_at: Date.now(),
+        })
         .eq('id', runId);
 
-      logTokenAnomaly(runId, run.user_id, effectiveModel, totalTokensUsed);
+      logTokenAnomaly(runId, run.user_id, effectiveModelId, totalTokensUsed);
 
 
       // ── PHASE 3 (VALIDATE): citation check + deduplication ──────────
@@ -1768,8 +2431,11 @@ export async function POST(request: NextRequest) {
           const reviewResult = await callGemini(
             reviewPromptConfig.system,
             reviewPromptConfig.user(questionsForReview),
+            renewLease,
+            'grounded-review',
           );
           totalTokensUsed += reviewResult.totalTokens;
+          accumulateRunUsage(usageAccumulator, reviewResult);
           await recordAISuccess('gemini');
 
           const reviewParsed = JSON.parse(
@@ -1856,17 +2522,33 @@ export async function POST(request: NextRequest) {
           const deficit = run.target_count - result.length;
           log('Retry', `Short by ${deficit} questions, generating extra round...`);
           try {
-            const maxChars = effectiveModel === 'groq' ? 32000 : 80000;
-            const retryChunks = selectChunksWithinTokenBudget(chunks, maxChars);
-            const formattedRetryChunks = formatChunksForPrompt(retryChunks);
-            const aiCall = effectiveModel === 'groq' ? callGroq : callGemini;
-            const retryResult = await aiCall(
-              promptConfig.system,
-              promptConfig.user(formattedRetryChunks, deficit),
+            const retryChunks = selectPromptChunksForRun(
+              chunks,
+              run.objective,
+              effectiveModel,
+              useReducedPromptBudget,
+            );
+            const retryPayload = buildGenerationPayload({
+              objective: run.objective,
+              targetCount: deficit,
+              chunks: retryChunks,
+              promptConfig,
+              digestContext: flashcardsDigestContext,
+            });
+            const retryResult = await callProviderWithFailover(
+              effectiveModel,
+              effectiveModelId,
+              retryPayload.system,
+              retryPayload.user,
+              retryPayload.promptCacheKey,
+              retryPayload.maxOutputTokens,
+              renewLease,
+              'retry-generation',
             );
             totalTokensUsed += retryResult.totalTokens;
+            accumulateRunUsage(usageAccumulator, retryResult);
             await recordAISuccess(effectiveModel);
-            const retryParsed = parseAIResponse(retryResult.text);
+            const retryParsed = normalizeParsedItems(run.objective, parseAIResponse(retryResult.text));
             if (Array.isArray(retryParsed) && retryParsed.length > 0) {
               const retryValidated = validateGeneratedItems(retryParsed, validChunkIdsForValidation, chunkContentMap);
               result.push(...retryValidated);
@@ -2102,7 +2784,7 @@ export async function POST(request: NextRequest) {
             id: generateId(),
             user_id: run.user_id,
             title: `${objectiveNames[run.objective] || 'Cards'} - ${source.filename}`,
-            description: `Gerado automaticamente via IA (${effectiveModel})`,
+            description: `Gerado automaticamente via IA (${effectiveModelId})`,
             created_at: now,
             updated_at: now,
           };
@@ -2221,12 +2903,18 @@ export async function POST(request: NextRequest) {
       // Mark run as completed
       await supabase
         .from("runs")
-        .update({
-          status: "concluido",
-          items_generated: savedCount,
-          completed_at: Date.now(),
-          updated_at: Date.now(),
-        })
+        .update(
+          finalizeRunUpdate({
+            ...buildRunUsageUpdate(usageAccumulator, effectiveModel, effectiveModelId),
+            status: "concluido",
+            items_generated: savedCount,
+            completed_at: Date.now(),
+            next_attempt_at: null,
+            last_error_code: null,
+            last_error_provider: null,
+            last_error_at: null,
+          }),
+        )
         .eq("id", runId);
 
       const totalElapsed = Date.now() - overallStart;
@@ -2239,7 +2927,8 @@ export async function POST(request: NextRequest) {
         itemsGenerated: savedCount,
         // deck_id in runs table contains simuladoId for questoes_banca, deckId for others
         resultId: run.objective === 'questoes_banca' ? undefined : undefined, // Already set in run.deck_id
-        modelUsed: currentModel,
+        provider: effectiveModel,
+        modelUsed: effectiveModelId,
         elapsedMs: totalElapsed,
       });
 
@@ -2249,37 +2938,69 @@ export async function POST(request: NextRequest) {
         : "Erro desconhecido no processamento";
       
       const nextAttempt = currentAttempts + 1;
+      const failureModel = effectiveModel;
+      const { errorCode, httpStatus } = await recordClassifiedProviderFailure(
+        failureModel,
+        processingError,
+      );
+      const retryDecision = getRetryDecision(nextAttempt, errorCode);
+      const responseStatus =
+        httpStatus ??
+        (errorCode === 'fatal_business_rule'
+          ? 400
+          : errorCode === 'rate_limit'
+            ? 429
+            : errorCode === 'payload_too_large'
+              ? 413
+              : errorCode === 'timeout'
+                ? 504
+                : 500);
 
-      if (nextAttempt < MAX_ATTEMPTS) {
-        // Retryable: reset to pendente so the cron can re-trigger
-        log('Retry', `Run failed (attempt ${nextAttempt}/${MAX_ATTEMPTS}), resetting to pendente: ${errorMessage}`);
+      if (retryDecision.shouldRetry && retryDecision.nextAttemptAt) {
+        log(
+          'Retry',
+          `Run failed with ${errorCode} (attempt ${nextAttempt}/${MAX_ATTEMPTS}), retry scheduled`,
+        );
         await supabase
           .from('runs')
-          .update({
-            status: 'pendente',
-            attempt_count: nextAttempt,
-            error_message: `Tentativa ${nextAttempt}: ${errorMessage}`,
-            updated_at: Date.now(),
-          })
+          .update(
+            finalizeRunUpdate({
+              ...buildRunUsageUpdate(usageAccumulator, effectiveModel, effectiveModelId),
+              status: retryDecision.newStatus,
+              started_at: null,
+              attempt_count: nextAttempt,
+              error_message: `Tentativa ${nextAttempt}: ${errorMessage}`,
+              last_error_code: errorCode,
+              last_error_provider: failureModel,
+              last_error_at: Date.now(),
+              next_attempt_at: retryDecision.nextAttemptAt,
+            }),
+          )
           .eq('id', runId);
       } else {
-        // Permanent failure: mark as erro
         log('Error', `Run permanently failed after ${nextAttempt} attempts: ${errorMessage}`);
         await supabase
           .from('runs')
-          .update({
+          .update(
+            finalizeRunUpdate({
+            ...buildRunUsageUpdate(usageAccumulator, effectiveModel, effectiveModelId),
             status: 'erro',
             attempt_count: nextAttempt,
+            last_error_code: errorCode,
+            last_error_provider: failureModel,
+            last_error_at: Date.now(),
+            next_attempt_at: null,
             error_message: `Falha definitiva após ${nextAttempt} tentativas: ${errorMessage}`,
             completed_at: Date.now(),
             updated_at: Date.now(),
-          })
+            }),
+          )
           .eq('id', runId);
       }
 
       return NextResponse.json(
-        { error: errorMessage, runId },
-        { status: 500 }
+        { error: errorMessage, runId, errorCode, retry: retryDecision.shouldRetry },
+        { status: responseStatus }
       );
     }
 
@@ -2291,5 +3012,25 @@ export async function POST(request: NextRequest) {
       { error: message },
       { status: 500 }
     );
+  } finally {
+    if (leaseHeartbeat) {
+      clearInterval(leaseHeartbeat);
+    }
+    if (ownsProviderSlot && slotKey && runId) {
+      try {
+        await releaseSlot(slotKey, runId);
+      } catch (releaseError) {
+        console.error(
+          JSON.stringify({
+            level: 'error',
+            event: 'provider_slot_release_failed',
+            runId,
+            slotKey,
+            error: releaseError instanceof Error ? releaseError.message : String(releaseError),
+          }),
+        );
+      }
+      triggerQueueDispatch(`slot-released:${runId}`);
+    }
   }
 }

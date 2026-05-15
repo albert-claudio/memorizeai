@@ -1,6 +1,5 @@
-
-import type { Source, RunObjective } from '@/lib/types';
 import type { MonthlyUsage } from '@/lib/billing/run-entitlement';
+import type { RunObjective, Source } from '@/lib/types';
 import { Icons } from './Icons';
 
 interface GenerateRunButtonProps {
@@ -10,6 +9,8 @@ interface GenerateRunButtonProps {
   targetCount: number;
   usage: MonthlyUsage | null;
   onCreateRun: () => void;
+  bancaBlocking?: boolean;
+  compact?: boolean;
 }
 
 export function GenerateRunButton({
@@ -19,43 +20,58 @@ export function GenerateRunButton({
   targetCount,
   usage,
   onCreateRun,
+  bancaBlocking = false,
+  compact = false,
 }: GenerateRunButtonProps) {
-  // Determine if monthly limit is reached for the selected objective
   const limitReached = (() => {
-    if (!usage || !selectedObjective) return false;
+    // Desativado temporariamente: geração ilimitada
+    return false;
+    /* if (!usage || !selectedObjective) return false;
 
     if (selectedObjective === 'flashcards') {
       return usage.flashcardsUsed >= usage.flashcardsLimit;
     }
-    // simulados / logica_juridica
-    return usage.simuladosUsed >= usage.simuladosLimit;
+
+    return usage.simuladosUsed >= usage.simuladosLimit; */
   })();
 
-  const canGenerate = selectedSource && selectedObjective && !creating && !limitReached;
+  const canGenerate = !!selectedSource && !!selectedObjective && !creating && !limitReached && !bancaBlocking;
 
-  // Build the status message
   const statusMessage = (() => {
-    if (!selectedSource || !selectedObjective) return null;
+    if (!selectedSource || !selectedObjective) {
+      return 'Selecione o objetivo, o material e o treino para liberar a geracao.';
+    }
 
-    if (limitReached) {
+    /* if (limitReached) {
       if (selectedObjective === 'flashcards') {
-        return '🔒 Limite mensal de gerações atingido. Faça upgrade para Pro.';
+        return 'Limite mensal de geracoes atingido. Faca upgrade para Pro.';
       }
-      return '🔒 Limite mensal de simulados atingido. Renova no próximo mês.';
+        return 'Limite mensal de simulados atingido. Renova no proximo mes.';
+    } */
+
+    if (bancaBlocking) {
+      return 'Selecione a banca para gerar um simulado com cara de prova.';
     }
 
     if (selectedObjective === 'flashcards') {
-      if (usage && !usage.isPro) {
-        return `✨ ${usage.flashcardsUsed}/${usage.flashcardsLimit} gerações usadas este mês`;
-      }
-      return '✨ Até 10.000 cards por deck no Pro!';
+      /* if (usage && !usage.isPro) {
+        return `${usage.flashcardsUsed}/${usage.flashcardsLimit} geracoes usadas neste mes.`;
+      } */
+      return 'Use os cards para revisar os pontos que vao cair no treino.';
     }
 
-    if (usage) {
-      return `📝 ${usage.simuladosUsed}/${usage.simuladosLimit} simulados usados este mês`;
-    }
+    /* if (usage) {
+      return `${usage.simuladosUsed}/${usage.simuladosLimit} simulados usados neste mes.`;
+    } */
+
     return null;
   })();
+
+  const actionLabel = selectedObjective === 'flashcards'
+    ? 'flashcards de revisao'
+    : selectedObjective === 'questoes_banca'
+      ? 'questoes de simulado'
+      : 'exercicios aplicados';
 
   return (
     <>
@@ -68,19 +84,15 @@ export function GenerateRunButton({
           alignItems: 'center',
           justifyContent: 'center',
           gap: 12,
-          padding: '20px 32px',
-          background: canGenerate
-            ? 'linear-gradient(135deg, #6366F1 0%, #7C3AED 100%)'
-            : 'var(--bg-muted)',
+          padding: compact ? '16px 22px' : '20px 32px',
+          background: canGenerate ? 'linear-gradient(135deg, #6366F1 0%, #7C3AED 100%)' : 'var(--bg-muted)',
           border: 'none',
           borderRadius: 16,
-          color: (selectedSource && selectedObjective) ? 'white' : 'var(--text-muted)',
-          fontSize: 18,
-          fontWeight: 600,
+          color: selectedSource && selectedObjective ? 'white' : 'var(--text-muted)',
+          fontSize: compact ? 16 : 18,
+          fontWeight: 700,
           cursor: canGenerate ? 'pointer' : 'not-allowed',
-          boxShadow: canGenerate
-            ? '0 4px 20px rgba(99, 102, 241, 0.3)'
-            : 'none',
+          boxShadow: canGenerate ? '0 4px 20px rgba(99, 102, 241, 0.3)' : 'none',
           transition: 'all 0.2s ease',
         }}
       >
@@ -94,18 +106,21 @@ export function GenerateRunButton({
         ) : (
           <>
             <Icons.Sparkles />
-            Gerar {targetCount} {selectedObjective === 'flashcards' ? 'Flashcards' : selectedObjective === 'questoes_banca' ? 'Questões' : 'Exercícios'}
+            {selectedObjective === 'questoes_banca' ? 'Gerar simulado' : 'Gerar'} {targetCount} {actionLabel}
           </>
         )}
       </button>
 
       {statusMessage && (
-        <p style={{
-          textAlign: 'center',
-          marginTop: 16,
-          fontSize: 13,
-          color: limitReached ? 'var(--text-warning, #F59E0B)' : 'var(--text-muted)',
-        }}>
+        <p
+          style={{
+            textAlign: compact ? 'left' : 'center',
+            marginTop: 14,
+            fontSize: compact ? 12 : 13,
+            lineHeight: 1.45,
+            color: limitReached ? 'var(--text-warning, #F59E0B)' : 'var(--text-muted)',
+          }}
+        >
           {statusMessage}
         </p>
       )}

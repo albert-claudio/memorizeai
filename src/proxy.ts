@@ -1,10 +1,9 @@
 import { createServerClient, type CookieOptions } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 import {
-  getRateLimiter,
+  applyRateLimit,
   getClientIP,
   getRateLimitError,
-  isRateLimitingEnabled,
 } from '@/lib/security/rate-limiter'
 import { hasProAccess } from '@/lib/billing/pro-access'
 
@@ -13,37 +12,37 @@ export async function proxy(request: NextRequest) {
 
   // ============================================================
   // RATE LIMITING (executa antes de qualquer outra coisa)
+  // Uses Redis when available, falls back to in-memory otherwise.
   // ============================================================
-  if (isRateLimitingEnabled()) {
-    const limiter = getRateLimiter(pathname)
-    
-    if (limiter) {
-      const ip = getClientIP(request)
-      const { success, limit, remaining, reset } = await limiter.limit(ip)
+  const ip = getClientIP(request)
+  const rateLimitResult = await applyRateLimit(pathname, ip)
 
-      // Se limite excedido, retorna 429
-      if (!success) {
-        const { error, retryAfter } = getRateLimitError(reset)
-        return NextResponse.json(
-          { error, retryAfter },
-          {
-            status: 429,
-            headers: {
-              'X-RateLimit-Limit': limit.toString(),
-              'X-RateLimit-Remaining': '0',
-              'X-RateLimit-Reset': reset.toString(),
-              'Retry-After': retryAfter.toString(),
-            },
-          }
-        )
-      }
+  if (rateLimitResult) {
+    const { success, limit, remaining, reset, mode } = rateLimitResult
 
-      // Adiciona headers de rate limit na resposta bem-sucedida
-      // Será propagado adiante pelo middleware
-      request.headers.set('X-RateLimit-Limit', limit.toString())
-      request.headers.set('X-RateLimit-Remaining', remaining.toString())
-      request.headers.set('X-RateLimit-Reset', reset.toString())
+    // Se limite excedido, retorna 429
+    if (!success) {
+      const { error, retryAfter } = getRateLimitError(reset)
+      return NextResponse.json(
+        { error, retryAfter },
+        {
+          status: 429,
+          headers: {
+            'X-RateLimit-Limit': limit.toString(),
+            'X-RateLimit-Remaining': '0',
+            'X-RateLimit-Reset': reset.toString(),
+            'X-RateLimit-Mode': mode,
+            'Retry-After': retryAfter.toString(),
+          },
+        }
+      )
     }
+
+    // Adiciona headers de rate limit na resposta bem-sucedida
+    request.headers.set('X-RateLimit-Limit', limit.toString())
+    request.headers.set('X-RateLimit-Remaining', remaining.toString())
+    request.headers.set('X-RateLimit-Reset', reset.toString())
+    request.headers.set('X-RateLimit-Mode', mode)
   }
 
   // ============================================================
@@ -105,7 +104,7 @@ export async function proxy(request: NextRequest) {
   const { data: { user } } = await supabase.auth.getUser()
 
   // Protected routes that require authentication
-  const protectedRoutes = ['/dashboard', '/deck', '/estudar', '/simulado', '/upgrade', '/settings']
+  const protectedRoutes = ['/admin', '/dashboard', '/deck', '/estudar', '/simulado', '/upgrade', '/settings']
   const isProtectedRoute = protectedRoutes.some(route => 
     request.nextUrl.pathname.startsWith(route)
   )
@@ -149,8 +148,20 @@ export async function proxy(request: NextRequest) {
       .select('is_pro, subscription_status, subscription_period_end, admin_override_pro')
       .eq('id', user.id)
       .single()
+    const { data: subscription } = await supabase
+      .from('subscriptions')
+      .select('status, cancel_at_period_end, current_period_end')
+      .eq('user_id', user.id)
+      .order('updated_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
 
-    const isActive = hasProAccess(profile)
+    const isActive = hasProAccess({
+      ...profile,
+      subscription_status: subscription?.status ?? profile?.subscription_status,
+      subscription_period_end: subscription?.current_period_end ?? profile?.subscription_period_end,
+      cancel_at_period_end: subscription?.cancel_at_period_end,
+    })
 
     if (!isActive) {
       // Redirect to upgrade page

@@ -6,14 +6,16 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "admin:bootstrap": "node scripts/bootstrap-admin.mjs",
     "lint": "eslint",
     "lint:ci": "eslint --max-warnings=0",
     "test": "vitest run",
     "test:vitest": "vitest run",
+    "test:security": "vitest run src/app/api/tests/user-isolation-pentest.test.ts src/app/api/stripe/tests/billing-e2e.test.ts src/lib/security/tests/webhook-security.test.ts src/lib/security/tests/cron-auth.test.ts",
     "test:live-integration": "node scripts/ci/live-integration-smoke.mjs"
   },
   "dependencies": {
-    "@sentry/nextjs": "^10.40.0",
+    "@sentry/nextjs": "^10.46.0",
     "@supabase/ssr": "^0.8.0",
     "@supabase/supabase-js": "^2.88.0",
     "@upstash/qstash": "^2.10.1",

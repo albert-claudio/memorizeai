@@ -2,6 +2,8 @@
 
 import Groq from 'groq-sdk';
 import { createClient } from '@/lib/supabase/server';
+import { getStudyGoalProfile, buildReinforcementSystemPrompt } from '@/lib/study-goal-profiles';
+import { getStudyGoal } from '@/lib/study-goal/get-study-goal';
 
 const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY,
@@ -18,19 +20,7 @@ interface GeneratedCard {
   back: string;
 }
 
-// System message para geração de reforço
-const SYSTEM_MESSAGE = `Você é um professor de Direito especialista em criar flashcards de reforço.
-
-Sua tarefa é criar NOVOS flashcards para reforçar conceitos que o aluno errou.
-
-REGRAS:
-1. Analise os flashcards que o aluno errou
-2. Crie novos flashcards que abordam os MESMOS temas de formas diferentes
-3. Use perguntas variadas: definição, exemplo, comparação, aplicação prática
-4. NÃO repita as perguntas originais - crie novas abordagens
-5. Foque em ajudar o aluno a entender melhor o conceito
-
-Responda APENAS com JSON válido.`;
+// System message is dynamically built from the study goal profile
 
 /**
  * Gera flashcards de reforço baseado nos cards que o usuário errou
@@ -46,7 +36,12 @@ export async function generateReinforcementCards(
     return { success: false, cardsCreated: 0, error: 'Nenhum card para reforço' };
   }
 
-  console.log(`[Reforço] Gerando reforço para ${wrongCards.length} cards errados do deck "${originalDeckTitle}"`);
+  // Load study goal profile for persona
+  const studyGoal = await getStudyGoal();
+  const profile = getStudyGoalProfile(studyGoal);
+  const SYSTEM_MESSAGE = buildReinforcementSystemPrompt(profile);
+
+  console.log(`[Reforço] Gerando reforço - Goal: ${studyGoal}, ${wrongCards.length} cards errados do deck "${originalDeckTitle}"`);
 
   // Formata os cards errados para o prompt
   const cardsContext = wrongCards.map((card, i) => 

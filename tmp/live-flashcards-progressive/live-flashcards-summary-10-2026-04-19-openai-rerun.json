@@ -1,0 +1,82 @@
+{
+  "provider": "openai",
+  "runCount": 10,
+  "targetCount": 3,
+  "totalElapsedMs": 42964,
+  "chunkBudget": {
+    "totalChunks": 8,
+    "selectedChunks": 8,
+    "selectedChars": 12760,
+    "totalChars": 12760
+  },
+  "phase1PromptBudget": {
+    "policy": {
+      "maxChunks": 2,
+      "maxCharsTotal": 2800,
+      "maxCharsPerChunk": 750
+    },
+    "selectedChunks": 2,
+    "selectedChars": 1496,
+    "totalChars": 12760
+  },
+  "syntheticChunkBudget": {
+    "totalChunks": 40,
+    "selectedChunks": 14,
+    "selectedChars": 29799,
+    "totalChars": 85239
+  },
+  "dispatch": {
+    "cycles": 13,
+    "totalDispatched": 10,
+    "totalSkippedCapacity": 27,
+    "totalLeaseReleases": 0,
+    "maxProviderFlashcardActive": 3,
+    "lastCycle": {
+      "ok": true,
+      "dispatched": 0,
+      "skipped": 0,
+      "message": "Queue empty"
+    }
+  },
+  "finalRuns": {
+    "concluded": 10,
+    "failed": 0,
+    "recovered": 0,
+    "queued": 0,
+    "retryWait": 0,
+    "processing": 0,
+    "legacyPending": 0,
+    "pending": 0
+  },
+  "timings": {
+    "avgCompletionMs": 23543,
+    "maxCompletionMs": 41597
+  },
+  "recoverResponses": [
+    {
+      "ok": true,
+      "scanned": {
+        "processing": 3,
+        "staleQueued": 0,
+        "legacyPendente": 0
+      },
+      "recoveredFromProcessing": 0,
+      "recoveredFromStale": 0,
+      "legacyRecovered": 0,
+      "markedFailed": 0
+    },
+    {
+      "ok": true,
+      "scanned": {
+        "processing": 1,
+        "staleQueued": 0,
+        "legacyPendente": 0
+      },
+      "recoveredFromProcessing": 0,
+      "recoveredFromStale": 0,
+      "legacyRecovered": 0,
+      "markedFailed": 0
+    }
+  ],
+  "sampleFailures": []
+}

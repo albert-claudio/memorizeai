@@ -1,0 +1,154 @@
+{
+  "provider": "openai",
+  "runCount": 50,
+  "targetCount": 3,
+  "totalElapsedMs": 271929,
+  "chunkBudget": {
+    "totalChunks": 8,
+    "selectedChunks": 8,
+    "selectedChars": 12760,
+    "totalChars": 12760
+  },
+  "phase1PromptBudget": {
+    "policy": {
+      "maxChunks": 2,
+      "maxCharsTotal": 2800,
+      "maxCharsPerChunk": 750
+    },
+    "selectedChunks": 2,
+    "selectedChars": 1496,
+    "totalChars": 12760
+  },
+  "syntheticChunkBudget": {
+    "totalChunks": 40,
+    "selectedChunks": 14,
+    "selectedChars": 29799,
+    "totalChars": 85239
+  },
+  "dispatch": {
+    "cycles": 74,
+    "totalDispatched": 51,
+    "totalSkippedCapacity": 261,
+    "totalLeaseReleases": 0,
+    "maxProviderFlashcardActive": 3,
+    "lastCycle": {
+      "ok": true,
+      "dispatched": 0,
+      "skipped": 0,
+      "message": "Queue empty"
+    }
+  },
+  "finalRuns": {
+    "concluded": 50,
+    "failed": 0,
+    "recovered": 1,
+    "queued": 0,
+    "retryWait": 0,
+    "processing": 0,
+    "legacyPending": 0,
+    "pending": 0
+  },
+  "timings": {
+    "avgCompletionMs": 86221,
+    "maxCompletionMs": 271510
+  },
+  "recoverResponses": [
+    {
+      "ok": true,
+      "scanned": {
+        "processing": 3,
+        "staleQueued": 0,
+        "legacyPendente": 0
+      },
+      "recoveredFromProcessing": 0,
+      "recoveredFromStale": 0,
+      "legacyRecovered": 0,
+      "markedFailed": 0
+    },
+    {
+      "ok": true,
+      "scanned": {
+        "processing": 3,
+        "staleQueued": 0,
+        "legacyPendente": 0
+      },
+      "recoveredFromProcessing": 0,
+      "recoveredFromStale": 0,
+      "legacyRecovered": 0,
+      "markedFailed": 0
+    },
+    {
+      "ok": true,
+      "scanned": {
+        "processing": 2,
+        "staleQueued": 0,
+        "legacyPendente": 0
+      },
+      "recoveredFromProcessing": 0,
+      "recoveredFromStale": 0,
+      "legacyRecovered": 0,
+      "markedFailed": 0
+    },
+    {
+      "ok": true,
+      "scanned": {
+        "processing": 3,
+        "staleQueued": 0,
+        "legacyPendente": 0
+      },
+      "recoveredFromProcessing": 0,
+      "recoveredFromStale": 0,
+      "legacyRecovered": 0,
+      "markedFailed": 0
+    },
+    {
+      "ok": true,
+      "scanned": {
+        "processing": 3,
+        "staleQueued": 0,
+        "legacyPendente": 0
+      },
+      "recoveredFromProcessing": 0,
+      "recoveredFromStale": 0,
+      "legacyRecovered": 0,
+      "markedFailed": 0
+    },
+    {
+      "ok": true,
+      "scanned": {
+        "processing": 0,
+        "staleQueued": 0,
+        "legacyPendente": 0
+      },
+      "recoveredFromProcessing": 0,
+      "recoveredFromStale": 0,
+      "legacyRecovered": 0,
+      "markedFailed": 0
+    },
+    {
+      "ok": true,
+      "scanned": {
+        "processing": 0,
+        "staleQueued": 0,
+        "legacyPendente": 0
+      },
+      "recoveredFromProcessing": 0,
+      "recoveredFromStale": 0,
+      "legacyRecovered": 0,
+      "markedFailed": 0
+    },
+    {
+      "ok": true,
+      "scanned": {
+        "processing": 0,
+        "staleQueued": 0,
+        "legacyPendente": 0
+      },
+      "recoveredFromProcessing": 0,
+      "recoveredFromStale": 0,
+      "legacyRecovered": 0,
+      "markedFailed": 0
+    }
+  ],
+  "sampleFailures": []
+}

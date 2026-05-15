@@ -2,6 +2,23 @@
 import { createClient } from '@/lib/supabase/client';
 import type { Card } from '@/lib/types';
 import type { Grade } from '@/lib/fsrs';
+import type { Deck } from '@/lib/types';
+import { attachCardSourceReferences } from '@/lib/cards/source-references';
+
+interface ReviewQueueResponse {
+  deck: Deck;
+  cards: Card[];
+  planner?: {
+    strategy: string;
+    appliedRules: string[];
+    examTarget: {
+      id: string;
+      title: string;
+      target_date: number;
+      target_retention: number;
+    } | null;
+  };
+}
 
 export const studyService = {
   async getDeck(deckId: string, userId: string) {
@@ -27,7 +44,26 @@ export const studyService = {
       .is('deleted_at', null);
 
     if (error) throw error;
-    return data as Card[];
+    return attachCardSourceReferences(supabase, data as Card[], 'study.cards');
+  },
+
+  async getReviewQueue(deckId: string) {
+    const response = await fetch(`/api/review/queue?deckId=${encodeURIComponent(deckId)}`, {
+      cache: 'no-store',
+    });
+
+    if (!response.ok) {
+      let message = 'Falha ao carregar fila de revisão';
+      try {
+        const body = await response.json();
+        if (body?.error) message = body.error;
+      } catch {
+        // Ignore JSON parsing errors and use default message.
+      }
+      throw new Error(message);
+    }
+
+    return await response.json() as ReviewQueueResponse;
   },
 
   async getUserSettings(userId: string) {

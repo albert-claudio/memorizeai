@@ -12,6 +12,8 @@ import {
   finalizeEvent,
 } from '@/lib/security/webhook-security';
 import type { WebhookOutcome } from '@/lib/security/webhook-security';
+import { emitPlanRenewalNotification } from '@/lib/notifications/emitters';
+import { captureApiError, captureWarning } from '@/lib/sentry';
 
 // ============================================================================
 // WEBHOOK HANDLER - Secure Backend Processing
@@ -548,7 +550,8 @@ export async function POST(request: NextRequest) {
         const { periodStart: updatedPeriodStart, periodEnd: updatedPeriodEnd } = getPeriodBounds(subUpdated);
         const updatedPriceId = subUpdated.items.data[0]?.price?.id || null;
         const isPaidTier = tier === 'pro' || tier === 'enterprise';
-        const isPro = isPaidTier && (
+        const isRenewing = !subUpdated.cancel_at_period_end;
+        const isPro = isPaidTier && isRenewing && (
           subUpdated.status === 'active' ||
           (subUpdated.status === 'past_due' && updatedPeriodEnd !== null && updatedPeriodEnd > now)
         );
@@ -563,7 +566,7 @@ export async function POST(request: NextRequest) {
         } = {
           is_pro: isPro,
           subscription_status: subUpdated.status,
-          subscription_tier: isPaidTier && (subUpdated.status === 'active' || subUpdated.status === 'past_due')
+          subscription_tier: isPro
             ? tier
             : 'free',
           stripe_customer_id: resolvedIdentity.customerId,
@@ -817,6 +820,29 @@ export async function POST(request: NextRequest) {
           break;
         }
 
+        await emitPlanRenewalNotification({
+          userId: resolvedIdentity.userId,
+          type: 'plan_renewal',
+          title: invoice.billing_reason === 'subscription_cycle'
+            ? 'Plano renovado com sucesso'
+            : 'Pagamento do plano confirmado',
+          body: paidPeriodEnd
+            ? `Seu plano ${tier} está ativo até ${new Date(paidPeriodEnd).toLocaleDateString('pt-BR')}.`
+            : `Seu pagamento do plano ${tier} foi confirmado com sucesso.`,
+          importance: 'high',
+          ctaLabel: 'Ver assinatura',
+          ctaUrl: '/dashboard/settings',
+          metadata: {
+            invoiceId: invoice.id,
+            subscriptionId: paidSubscriptionId,
+            billingReason: invoice.billing_reason ?? null,
+            tier,
+          },
+          dedupeKey: `plan-renewal:${invoice.id}`,
+        }).catch((notificationError) => {
+          console.error('[Stripe Webhook] Notification error:', notificationError);
+        });
+
         outcome = 'applied';
         outcomeReason = `Invoice paid processed for user ${resolvedIdentity.userId}`;
         console.log(`[Stripe Webhook] ${outcomeReason}`);
@@ -952,10 +978,20 @@ export async function POST(request: NextRequest) {
 
     // permanent_failure → 200 to stop Stripe retries (manual review needed)
     if (outcome === 'permanent_failure') {
+      captureApiError(new Error(outcomeReason), {
+        route: 'stripe/webhook',
+        tags: { eventType: event.type, outcome: 'permanent_failure', eventId: event.id },
+        extra: { outcomeReason },
+      });
       return NextResponse.json({ received: true, outcome, reason: outcomeReason });
     }
 
     // transient_failure → 500 so Stripe retries delivery
+    captureWarning(`Webhook transient failure: ${outcomeReason}`, {
+      route: 'stripe/webhook',
+      tags: { eventType: event.type, outcome: 'transient_failure', eventId: event.id },
+      extra: { outcomeReason },
+    });
     return NextResponse.json(
       { error: 'Transient processing failure', outcome, reason: outcomeReason },
       { status: 500 }
@@ -966,6 +1002,10 @@ export async function POST(request: NextRequest) {
     const processingTimeMs = Date.now() - startTime;
 
     console.error('[Stripe Webhook] Unhandled processing error:', error);
+    captureApiError(error, {
+      route: 'stripe/webhook',
+      tags: { eventType: event.type, eventId: event.id },
+    });
 
     await finalizeEvent(event.id, 'transient_failure',
       error instanceof Error ? error.message : 'Unknown processing error',

@@ -134,7 +134,7 @@ function Navbar() {
             WebkitBackgroundClip: 'text',
             WebkitTextFillColor: 'transparent',
             backgroundClip: 'text',
-          }}>Memoriza</span>
+          }}>Vimens</span>
         </a>
         
         <Link href="/cadastro" className="btn-primary navbar-cta">
@@ -164,7 +164,7 @@ function Hero() {
           <div className="hero-content">
             <div className="animate-fade-up" style={{ animationDelay: '0s' }}>
               <span className="badge badge-accent" style={{ marginBottom: 24 }}>
-                Acesso antecipado
+                Pare de estudar no escuro
               </span>
             </div>
             
@@ -176,27 +176,17 @@ function Hero() {
               marginBottom: 16,
               animationDelay: '0.1s'
             }}>
-              Aprovação em concursos é <span className="text-gradient">questão de método.</span>
+              Ler não aprova. <span className="text-gradient">Acertar questões, sim.</span>
             </h1>
             
             <p className="animate-fade-up" style={{ 
               fontSize: 'clamp(16px, 2.2vw, 22px)', 
               color: 'var(--text-secondary)', 
-              marginBottom: 24,
+              marginBottom: 32,
               lineHeight: 1.5,
               animationDelay: '0.15s'
             }}>
-              Seu PDF vira flashcards. Revisão no ritmo certo.
-            </p>
-            
-            <p className="animate-fade-up" style={{ 
-              fontSize: 'clamp(14px, 1.5vw, 16px)', 
-              color: 'var(--text-muted)', 
-              marginBottom: 32,
-              lineHeight: 1.6,
-              animationDelay: '0.2s'
-            }}>
-              Envie seu PDF. Nossa IA lê seu PDF e cria o cronograma perfeito em segundos. Você aprova e ajusta antes de estudar. As revisões se adaptam aos seus acertos e erros.
+              Chega de leitura passiva. Envie seu material e transforme resumos em simulados da sua banca. Descubra o que você não sabe antes da prova.
             </p>
             
             <div className="animate-fade-up" style={{ 
@@ -208,7 +198,7 @@ function Hero() {
             }}>
               <Link href="/cadastro" className="btn-primary" onClick={() => track('signup_click', { source: 'hero_cta' })}>
                 <Icons.Rocket />
-                Começar Grátis
+                Criar conta grátis e testar meu material
               </Link>
               <Link href="/demo" className="btn-secondary">
                 <Icons.Play />
@@ -301,7 +291,7 @@ function Hero() {
 function HowItWorks() {
   const steps = [
     { num: '01', title: 'Envie seu material', desc: 'PDF, texto ou anotações. Qualquer conteúdo que você queira memorizar.' },
-    { num: '02', title: 'Gere e aprove os cards', desc: 'O Memoriza cria os flashcards. Você edita, aprova ou descarta antes de estudar.' },
+    { num: '02', title: 'Insira o material que você já estuda', desc: 'A IA transforma seu conteúdo em questões, explicações e fontes rastreáveis.' },
     { num: '03', title: 'Revise todo dia', desc: 'O sistema agenda as próximas revisões com base nos seus acertos e erros.' },
   ];
 
@@ -421,7 +411,7 @@ function DemoPreview() {
           <div style={{ textAlign: 'center', marginTop: 32 }}>
             <Link href="/cadastro" className="btn-primary">
               <Icons.Upload />
-              Começar grátis e importar meu PDF
+              Começar grátis e importar meu material
             </Link>
           </div>
         </div>
@@ -480,8 +470,8 @@ function Exams() {
 function Features() {
   const features = [
     { icon: <Icons.Upload />, title: 'Geração a partir do PDF', desc: 'Envie seu material e receba flashcards prontos para revisar.' },
-    { icon: <Icons.Edit />, title: 'Edição e aprovação', desc: 'Você edita, aprova ou descarta cada card antes de estudar.' },
-    { icon: <Icons.Brain />, title: 'Revisões adaptativas', desc: 'FSRS V5 agenda revisões com base nos seus acertos e erros.' },
+    { icon: <Icons.Upload />, title: 'Seu conteúdo vira treino', desc: 'Nada de quiz solto: as questões nascem do material que você realmente está usando.' },
+    { icon: <Icons.Shield />, title: 'Sem inventar quando a base é fraca', desc: 'Se o material não sustenta uma questão difícil, o Vimens limita ou recusa em vez de maquiar resposta.' },
     { icon: <Icons.Target />, title: 'Metas de retenção', desc: 'Defina quanto quer lembrar: 80%, 85%, 90%. O sistema ajusta.' },
     { icon: <Icons.Chart />, title: 'Estatísticas claras', desc: 'Veja sua evolução, identifique lacunas e acompanhe o progresso.' },
     { icon: <Icons.Folder />, title: 'Organização por trilhas', desc: 'Separe por matéria, concurso ou tema. Encontre tudo rápido.' },
@@ -492,7 +482,7 @@ function Features() {
       <div className="container">
         <div style={{ textAlign: 'center', marginBottom: 48 }}>
           <span className="badge badge-accent" style={{ marginBottom: 16 }}>Recursos</span>
-          <h2 className="section-title">Controle total sobre <span className="text-gradient">seu estudo</span></h2>
+          <h2 className="section-title">Do seu material ao diagnóstico em <span className="text-gradient">poucos minutos</span></h2>
           <p className="section-subtitle" style={{ margin: '0 auto' }}>
             Nada de caixa preta. Você decide o que estudar e quando.
           </p>
@@ -675,7 +665,7 @@ function Pricing() {
             </span>
           </div>
           <p style={{ marginTop: 16, fontSize: 13, color: 'var(--text-muted)' }}>
-            No Pro, você libera flashcards e simulados por banca para estudar com mais profundidade.
+            Treinar revela o erro. Seu material vira simulado, correção e diagnóstico para mostrar o que ainda derruba sua nota.
           </p>
         </div>
       </div>
@@ -695,7 +685,7 @@ function CTA() {
         </h2>
         
         <p style={{ color: 'var(--text-secondary)', marginBottom: 32, fontSize: 16 }}>
-          Importe seu primeiro PDF e veja os flashcards gerados em segundos.
+          Crie uma conta grátis, envie seu material e veja o Vimens apontar o caminho entre o estudo passivo e a aprovação.
         </p>
         
         <Link href="/cadastro" className="btn-primary" style={{ marginBottom: 24 }}>
@@ -725,7 +715,7 @@ function Footer() {
             WebkitBackgroundClip: 'text',
             WebkitTextFillColor: 'transparent',
             backgroundClip: 'text',
-          }}>Memoriza</span>
+          }}>Vimens</span>
         </Link>
         
         <div className="footer-links">
@@ -735,7 +725,7 @@ function Footer() {
         </div>
         
         <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>
-          © 2026 Memoriza
+          © 2026 Vimens
         </p>
       </div>
     </footer>

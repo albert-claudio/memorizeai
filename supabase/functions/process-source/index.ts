@@ -38,8 +38,11 @@ function hasProAccess(profile: {
   is_pro?: boolean | null;
   subscription_status?: string | null;
   subscription_period_end?: number | null;
+  admin_override_pro?: boolean | null;
+  cancel_at_period_end?: boolean | null;
 } | null | undefined): boolean {
   if (!profile?.is_pro) return false;
+  if (profile.cancel_at_period_end) return false;
 
   const status = profile.subscription_status ?? 'free';
   if (status !== 'active' && status !== 'past_due') return false;
@@ -49,7 +52,7 @@ function hasProAccess(profile: {
     return periodEnd > Date.now();
   }
 
-  return status === 'active';
+  return false;
 }
 
 // Split text into chunks with overlap
@@ -212,11 +215,23 @@ serve(async (req: Request) => {
       // ================================================================
       const { data: profile } = await supabase
         .from("profiles")
-        .select("is_pro, subscription_status, subscription_period_end")
+        .select("is_pro, subscription_status, subscription_period_end, admin_override_pro")
         .eq("id", user.id)
         .single();
+      const { data: subscription } = await supabase
+        .from("subscriptions")
+        .select("status, cancel_at_period_end, current_period_end")
+        .eq("user_id", user.id)
+        .order("updated_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
 
-      const isPro = hasProAccess(profile);
+      const isPro = hasProAccess({
+        ...profile,
+        subscription_status: subscription?.status ?? profile?.subscription_status,
+        subscription_period_end: subscription?.current_period_end ?? profile?.subscription_period_end,
+        cancel_at_period_end: subscription?.cancel_at_period_end,
+      });
 
       if (!isPro) {
         return new Response(

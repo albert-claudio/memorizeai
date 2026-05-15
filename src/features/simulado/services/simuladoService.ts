@@ -12,6 +12,9 @@ export interface Questao {
   alternativa_e: string;
   resposta_correta: string;
   comentario: string;
+  chunk_id?: string | null;
+  citation_excerpt?: string | null;
+  extra_sources?: Array<{ chunkId: string; citationExcerpt: string }> | null;
 }
 
 export interface Resposta {

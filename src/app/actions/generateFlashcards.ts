@@ -2,6 +2,8 @@
 
 import Groq from 'groq-sdk';
 import { createClient } from '@/lib/supabase/server';
+import { getStudyGoalProfile, detectContentType as detectContentArea, buildSystemPrompt, type StudyGoalProfile } from '@/lib/study-goal-profiles';
+import { getStudyGoal } from '@/lib/study-goal/get-study-goal';
 
 const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY,
@@ -13,26 +15,7 @@ interface Flashcard {
   category?: 'conceito' | 'artigo' | 'jurisprudencia' | 'procedimento' | 'prazo' | 'geral';
 }
 
-// System message especializado em Direito brasileiro
-const SYSTEM_MESSAGE = `Você é um professor de Direito com 20 anos de experiência, especialista em criar flashcards para concursos públicos e OAB.
-
-REGRAS ABSOLUTAS:
-1. CRIE FLASHCARDS APENAS com informações do texto fornecido pelo usuário
-2. NUNCA invente informações que não estejam no texto
-3. NUNCA use exemplos genéricos - tudo deve vir do texto
-4. SEMPRE inclua referência legal quando mencionar artigos/leis do texto
-5. Respostas devem ser completas mas objetivas (máximo 4 frases)
-6. Perguntas devem ser específicas e testar compreensão
-
-CATEGORIAS VÁLIDAS:
-- "conceito": Definições e princípios jurídicos
-- "artigo": Artigos de lei específicos  
-- "jurisprudencia": Súmulas e entendimentos de tribunais
-- "procedimento": Ritos e procedimentos processuais
-- "prazo": Prazos processuais e prescricionais
-- "geral": Outros conteúdos relevantes
-
-Responda APENAS com JSON válido, nada mais.`;
+// System message is now dynamically built from the study goal profile
 
 /**
  * Pré-processa o texto para melhorar a extração
@@ -56,28 +39,10 @@ function smartTruncate(text: string, maxChars: number = 20000): string {
 }
 
 /**
- * Detecta o tipo de conteúdo jurídico
+ * Detecta o tipo de conteúdo usando o perfil do study goal
  */
-function detectContentType(text: string): string {
-  const patterns = {
-    constitucional: /constituição|constitucional|art\.\s*5|direitos fundamentais|cf\/88/gi,
-    civil: /código civil|cc\/2002|obrigações|contratos|responsabilidade civil/gi,
-    penal: /código penal|cp|crime|pena|tipicidade|antijuridicidade/gi,
-    trabalhista: /clt|trabalhista|empregado|empregador|súmula.*tst/gi,
-    processual: /cpc|cpp|processo|recurso|ação|petição|contestação/gi,
-    administrativo: /administração pública|ato administrativo|licitação|servidor/gi,
-    tributario: /tributo|imposto|taxa|contribuição|crédito tributário/gi,
-  };
-  
-  const matches: Record<string, number> = {};
-  
-  for (const [area, regex] of Object.entries(patterns)) {
-    const found = text.match(regex);
-    matches[area] = found ? found.length : 0;
-  }
-  
-  const bestMatch = Object.entries(matches).sort((a, b) => b[1] - a[1])[0];
-  return bestMatch && bestMatch[1] > 2 ? bestMatch[0] : 'geral';
+function detectContentType(text: string, profile: StudyGoalProfile): string {
+  return detectContentArea(text, profile);
 }
 
 /**
@@ -192,18 +157,23 @@ export async function generateFlashcards(text: string): Promise<Flashcard[]> {
     throw new Error('Usuário não autenticado');
   }
 
+  // Load study goal profile
+  const studyGoal = await getStudyGoal();
+  const profile = getStudyGoalProfile(studyGoal);
+  const SYSTEM_MESSAGE = buildSystemPrompt(profile);
+
   const truncatedText = smartTruncate(text);
-  const contentType = detectContentType(text);
+  const contentType = detectContentType(text, profile);
   const textKeywords = extractKeywords(text);
   
-  console.log(`[AI] Gerando flashcards - Área: ${contentType}, Texto: ${truncatedText.length} chars, Keywords: ${textKeywords.size}`);
+  console.log(`[AI] Gerando flashcards - Goal: ${studyGoal}, Área: ${contentType}, Texto: ${truncatedText.length} chars, Keywords: ${textKeywords.size}`);
   
   // Log das primeiras palavras do texto para debug
   console.log(`[AI] Início do texto: "${truncatedText.slice(0, 200)}..."`);
   
-  const userPrompt = `Leia o texto jurídico abaixo e crie flashcards de estudo.
+  const userPrompt = `Leia o ${profile.textLabel} abaixo e crie flashcards de estudo.
 
-ÁREA DO DIREITO: ${contentType.toUpperCase()}
+ÁREA: ${contentType.toUpperCase()}
 
 REGRAS OBRIGATÓRIAS:
 - Crie entre 15 e 25 flashcards
@@ -299,9 +269,8 @@ JSON:`;
         continue;
       }
       
-      // Normaliza categoria
-      const validCategories = ['conceito', 'artigo', 'jurisprudencia', 'procedimento', 'prazo', 'geral'];
-      if (!card.category || !validCategories.includes(card.category)) {
+      // Normaliza categoria usando o perfil
+      if (!card.category || !profile.categoryKeys.includes(card.category)) {
         card.category = 'geral';
       }
       

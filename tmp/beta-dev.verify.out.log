@@ -1,0 +1,17 @@
+
+> vimens@0.1.0 dev
+> next dev
+
+▲ Next.js 16.1.6 (Turbopack)
+- Local:         http://localhost:3000
+- Network:       http://26.250.168.95:3000
+- Environments: .env
+- Experiments (use with caution):
+  · clientTraceMetadata
+  · serverActions
+
+✓ Starting...
+✓ Ready in 6.3s
+ GET /beta 200 in 2.9s (compile: 2.3s, proxy.ts: 16ms, render: 683ms)
+ GET /beta 200 in 114ms (compile: 23ms, proxy.ts: 19ms, render: 72ms)
+ GET /beta 200 in 129ms (compile: 20ms, proxy.ts: 21ms, render: 88ms)

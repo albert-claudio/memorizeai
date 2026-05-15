@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import type { User } from '@supabase/supabase-js';
-import { hasProAccess } from '@/lib/billing/pro-access';
+import { getEffectiveProAccess } from '@/lib/billing/effective-pro-access';
+import { captureWarning } from '@/lib/sentry';
 
 // ============================================================================
 // TYPES
@@ -39,14 +40,7 @@ export async function requireAuth(
     );
   }
 
-  // Get Pro status
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('is_pro, subscription_status, subscription_period_end, admin_override_pro')
-    .eq('id', user.id)
-    .single();
-
-  const isPro = hasProAccess(profile);
+  const isPro = await getEffectiveProAccess(supabase, user.id);
 
   return { user, isPro };
 }
@@ -107,6 +101,11 @@ export async function requireOwnership(
 
   if (data.user_id !== userId) {
     console.warn(`[Security] IDOR attempt: User ${userId} tried to access ${table}/${resourceId} owned by ${data.user_id}`);
+    captureWarning(`IDOR attempt: User ${userId} tried to access ${table}/${resourceId}`, {
+      route: 'auth-guard',
+      userId,
+      tags: { table, resourceId, ownerId: data.user_id, severity: 'security' },
+    });
     return NextResponse.json(
       { error: 'Acesso negado. Você não tem permissão para acessar este recurso.' },
       { status: 403 }

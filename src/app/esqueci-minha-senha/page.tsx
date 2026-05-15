@@ -110,9 +110,10 @@ export default function EsqueciMinhaSenhaPage() {
     setLoading(true);
     
     try {
+      window.localStorage.setItem('auth-flow', 'recovery');
       const supabase = createClient();
       const { error } = await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo: `${window.location.origin}/auth/callback?next=/dashboard`,
+        redirectTo: `${window.location.origin}/auth/callback?flow=recovery&next=/redefinir-senha`,
       });
       
       if (error) {

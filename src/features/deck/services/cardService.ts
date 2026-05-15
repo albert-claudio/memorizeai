@@ -1,6 +1,7 @@
 
 import { createClient } from '@/lib/supabase/client';
 import type { Card } from '@/lib/types';
+import { attachCardSourceReferences } from '@/lib/cards/source-references';
 
 export const cardService = {
   async getCards(deckId: string) {
@@ -13,7 +14,7 @@ export const cardService = {
       .order('created_at', { ascending: false });
 
     if (error) throw error;
-    return data as Card[];
+    return attachCardSourceReferences(supabase, data as Card[], 'deck.cards');
   },
 
   async createCard(deckId: string, front: string, back: string) {

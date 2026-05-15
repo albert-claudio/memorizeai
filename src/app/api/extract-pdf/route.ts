@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
-import { hasProAccess } from '@/lib/billing/pro-access';
+import { getEffectiveProAccess } from '@/lib/billing/effective-pro-access';
 
 // Route Segment Config (App Router format)
 export const maxDuration = 120; // 120 segundos de timeout
@@ -166,13 +166,7 @@ export async function POST(request: NextRequest) {
     // ================================================================
     // PRO TIER VALIDATION - PDF extraction requires Pro subscription
     // ================================================================
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('is_pro, subscription_status, subscription_period_end, admin_override_pro')
-      .eq('id', user.id)
-      .single();
-
-    const isPro = hasProAccess(profile);
+    const isPro = await getEffectiveProAccess(supabase, user.id);
 
     if (!isPro) {
       return NextResponse.json(

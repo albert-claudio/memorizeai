@@ -6,5 +6,14 @@ Sentry.init({
   sampleRate: 1.0,
   tracesSampleRate: 0.1,
 
+  beforeSend(event) {
+    event.tags = {
+      ...event.tags,
+      app: "vimens",
+      runtime: "edge",
+    };
+    return event;
+  },
+
   environment: process.env.NODE_ENV,
 });

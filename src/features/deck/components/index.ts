@@ -4,4 +4,5 @@ export * from './DeckHeader';
 export * from './EmptyState';
 export * from './CardItem';
 export * from './CardList';
+export * from './ExamTargetCard';
 export * from './Modals';
