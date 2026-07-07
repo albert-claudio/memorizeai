@@ -1,0 +1,19 @@
+{
+  "runId": "cb97b0d5-2292-4284-a4ba-efb553b25b9f",
+  "recoverBody": {
+    "ok": true,
+    "scanned": {
+      "processing": 1,
+      "staleQueued": 0,
+      "legacyPendente": 0
+    },
+    "recoveredFromProcessing": 1,
+    "recoveredFromStale": 0,
+    "legacyRecovered": 0,
+    "markedFailed": 0
+  },
+  "terminalStatus": "concluido",
+  "itemsGenerated": 2,
+  "attemptCount": 2,
+  "elapsedMs": 6678
+}

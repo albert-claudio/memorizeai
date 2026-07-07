@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { stripe, getOrCreateCustomer, getSubscriptionStatus } from '@/lib/billing/stripe';
 import { getCheckoutPlan } from '@/lib/billing/plans';
-import { getBaseUrl } from '@/lib/url';
+import { getAllowedRequestOrigins, getRequestOrigin } from '@/lib/security/request-origin';
 
 const ALLOWED_REQUEST_KEYS = new Set(['planKey']);
 const FORBIDDEN_CLIENT_PRICING_KEYS = [
@@ -26,37 +26,13 @@ function parseBody(raw: unknown): Record<string, unknown> {
   return raw as Record<string, unknown>;
 }
 
-function normalizeOrigin(value: string | null): string | null {
-  if (!value) {
-    return null;
-  }
-
-  try {
-    return new URL(value).origin;
-  } catch {
-    return null;
-  }
-}
-
 function validateOrigin(request: NextRequest): { valid: true; origin: string } | { valid: false } {
-  const requestOrigin = normalizeOrigin(
-    request.headers.get('origin') || request.headers.get('referer')
-  );
+  const requestOrigin = getRequestOrigin(request);
   if (!requestOrigin) {
     return { valid: false };
   }
 
-  const allowedOrigins = new Set(
-    [
-      request.nextUrl.origin,
-      getBaseUrl(),
-      'https://vimens.app',
-      'https://www.vimens.app',
-      'http://localhost:3000',
-    ]
-      .map((origin) => normalizeOrigin(origin ?? null))
-      .filter((origin): origin is string => Boolean(origin))
-  );
+  const allowedOrigins = getAllowedRequestOrigins(request);
 
   if (!allowedOrigins.has(requestOrigin)) {
     return { valid: false };

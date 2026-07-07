@@ -394,7 +394,7 @@ export async function POST(request: NextRequest) {
     }
     
     return NextResponse.json(
-      { error: `Signature verification failed: ${message}` },
+      { error: 'Assinatura do webhook invalida.' },
       { status: 400 }
     );
   }
@@ -403,6 +403,13 @@ export async function POST(request: NextRequest) {
   // 6. ATOMIC IDEMPOTENCY CHECK (Race-condition safe via INSERT conflict)
   // ================================================================
   const idempotencyCheck = await checkEventIdempotencyAtomic(event.id, clientIP, event.type);
+  if (idempotencyCheck.unavailable) {
+    console.error('[Stripe Webhook] Idempotency unavailable — failing closed for retry:', event.id);
+    return NextResponse.json(
+      { error: 'Idempotency check unavailable' },
+      { status: 500 },
+    );
+  }
   if (!idempotencyCheck.isNew) {
     console.log(`[Stripe Webhook] Duplicate event ignored: ${event.id}`);
     // Note: logWebhookAttempt not needed here - atomic insert already logged
@@ -962,7 +969,7 @@ export async function POST(request: NextRequest) {
       ip: clientIP,
       eventId: event.id,
       eventType: event.type,
-      success: outcome === 'applied' || outcome === 'ignored',
+      success: outcome === 'applied' || outcome === 'ignored' || outcome === 'permanent_failure',
       error: (outcome === 'transient_failure' || outcome === 'permanent_failure')
         ? outcomeReason
         : undefined,

@@ -9,6 +9,7 @@ import {
   getCapacitySummary,
   type ProviderSlotKey,
 } from '@/lib/ai/provider-capacity';
+import { getFallbackSlotKey } from '@/lib/runs/process/lifecycle/capacity';
 
 // ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -27,22 +28,6 @@ const RUN_LEASE_MS = parseInt(process.env.RUN_LEASE_MS || '180000', 10);
  */
 function isInternalDispatchAuthorized(request: NextRequest, internalSecret: string | null): boolean {
   return Boolean(internalSecret) && request.headers.get('x-internal-secret') === internalSecret;
-}
-
-function canFailoverFlashcardsToOpenAI(objective: string, preference: string | null | undefined): boolean {
-  return objective === 'flashcards' && (preference == null || preference === 'auto' || preference === 'groq');
-}
-
-function getFallbackSlotKey(
-  objective: string,
-  preference: string | null | undefined,
-  currentSlotKey: ProviderSlotKey,
-): ProviderSlotKey | null {
-  if (!canFailoverFlashcardsToOpenAI(objective, preference)) {
-    return null;
-  }
-
-  return currentSlotKey === 'groq:flashcards' ? 'openai:flashcards' : null;
 }
 
 function getPossibleSlotKeys(

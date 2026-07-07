@@ -1,41 +1,48 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
+import { createClient as createSupabaseAdmin, type SupabaseClient } from '@supabase/supabase-js';
 import { stripe } from '@/lib/billing/stripe';
-import { getBaseUrl } from '@/lib/url';
+import { getAllowedRequestOrigins, getRequestOrigin } from '@/lib/security/request-origin';
 
-function normalizeOrigin(value: string | null): string | null {
-  if (!value) {
+const supabaseAdmin = createSupabaseAdmin(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  { auth: { persistSession: false } }
+);
+
+async function resolveStripeCustomerId(
+  supabaseAdminClient: SupabaseClient,
+  userId: string
+): Promise<string | null> {
+  const { data: profile, error: profileError } = await supabaseAdminClient
+    .from('profiles')
+    .select('stripe_customer_id')
+    .eq('id', userId)
+    .maybeSingle();
+
+  if (profileError) {
+    console.warn('[Stripe Portal] Unable to read profile stripe_customer_id:', profileError);
+  }
+
+  if (profile?.stripe_customer_id) {
+    return profile.stripe_customer_id;
+  }
+
+  const { data: latestSubscription, error: subscriptionError } = await supabaseAdminClient
+    .from('subscriptions')
+    .select('stripe_customer_id')
+    .eq('user_id', userId)
+    .eq('status', 'active')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (subscriptionError) {
+    console.warn('[Stripe Portal] Unable to read active subscription row:', subscriptionError);
     return null;
   }
 
-  try {
-    return new URL(value).origin;
-  } catch {
-    return null;
-  }
-}
-
-function getRequestOrigin(request: NextRequest): string | null {
-  const originHeader = request.headers.get('origin');
-  if (originHeader) {
-    return normalizeOrigin(originHeader);
-  }
-
-  return normalizeOrigin(request.headers.get('referer'));
-}
-
-function getAllowedOrigins(request: NextRequest): Set<string> {
-  return new Set(
-    [
-      request.nextUrl.origin,
-      getBaseUrl(),
-      'https://vimens.app',
-      'https://www.vimens.app',
-      'http://localhost:3000',
-    ]
-      .map((origin) => normalizeOrigin(origin ?? null))
-      .filter((origin): origin is string => Boolean(origin))
-  );
+  return latestSubscription?.stripe_customer_id ?? null;
 }
 
 export async function POST(request: NextRequest) {
@@ -54,15 +61,11 @@ export async function POST(request: NextRequest) {
     }
 
     // ================================================================
-    // 2. GET STRIPE CUSTOMER ID FROM PROFILE
+    // 2. GET STRIPE CUSTOMER ID (admin client bypasses RLS on profiles)
     // ================================================================
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('stripe_customer_id')
-      .eq('id', user.id)
-      .single();
+    const stripeCustomerId = await resolveStripeCustomerId(supabaseAdmin, user.id);
 
-    if (!profile?.stripe_customer_id) {
+    if (!stripeCustomerId) {
       return NextResponse.json(
         { error: 'Nenhuma assinatura encontrada' },
         { status: 400 }
@@ -72,7 +75,7 @@ export async function POST(request: NextRequest) {
     // ================================================================
     // 3. SECURITY: Validate Origin (CSRF protection)
     // ================================================================
-    const allowedOrigins = getAllowedOrigins(request);
+    const allowedOrigins = getAllowedRequestOrigins(request);
     const requestOrigin = getRequestOrigin(request);
 
     if (!requestOrigin || !allowedOrigins.has(requestOrigin)) {
@@ -83,7 +86,7 @@ export async function POST(request: NextRequest) {
     }
 
     const session = await stripe.billingPortal.sessions.create({
-      customer: profile.stripe_customer_id,
+      customer: stripeCustomerId,
       return_url: `${requestOrigin}/dashboard`,
     });
 

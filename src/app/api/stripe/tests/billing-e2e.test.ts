@@ -441,6 +441,97 @@ describe('billing checkout', () => {
     expect(mocks.checkoutSessionCreate).not.toHaveBeenCalled();
   });
 
+  it('allows checkout upgrade while the user only has free-trial Pro access', async () => {
+    const supabase = createServerSupabaseClient({
+      user: { id: 'user_trial_upgrade', email: 'trial-upgrade@example.com', user_metadata: { name: 'Trial Upgrade' } },
+    });
+    mocks.createServerClient.mockResolvedValue(supabase.client);
+    mocks.getSubscriptionStatus.mockResolvedValue({
+      isPro: true,
+      status: 'trialing',
+      tier: 'pro',
+      periodEnd: Date.now() + 14 * 24 * 60 * 60 * 1000,
+    });
+    mocks.getOrCreateCustomer.mockResolvedValue('cus_trial_upgrade');
+    mocks.checkoutSessionCreate.mockResolvedValue({
+      id: 'cs_trial_upgrade',
+      url: 'https://checkout.stripe.com/trial-upgrade',
+    });
+
+    const { POST } = await import('@/app/api/stripe/create-checkout/route');
+
+    const request = new NextRequest('https://vimens.app/api/stripe/create-checkout', {
+      method: 'POST',
+      headers: { origin: 'https://vimens.app', 'content-type': 'application/json' },
+      body: JSON.stringify({ planKey: 'pro_monthly' }),
+    });
+
+    const response = await POST(request);
+    const json = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(json).toEqual({
+      url: 'https://checkout.stripe.com/trial-upgrade',
+    });
+    expect(mocks.getOrCreateCustomer).toHaveBeenCalledWith(
+      'user_trial_upgrade',
+      'trial-upgrade@example.com',
+      'Trial Upgrade',
+    );
+    expect(mocks.checkoutSessionCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        customer: 'cus_trial_upgrade',
+        mode: 'subscription',
+        metadata: expect.objectContaining({
+          user_id: 'user_trial_upgrade',
+          plan_key: 'pro_monthly',
+        }),
+      }),
+      expect.objectContaining({
+        idempotencyKey: expect.any(String),
+      }),
+    );
+  });
+
+  it('allows checkout from the configured public launch domain', async () => {
+    process.env.NEXT_PUBLIC_APP_URL = 'https://www.vimens.com.br';
+
+    const supabase = createServerSupabaseClient({
+      user: { id: 'user_public_domain', email: 'public-domain@example.com' },
+    });
+    mocks.createServerClient.mockResolvedValue(supabase.client);
+    mocks.getSubscriptionStatus.mockResolvedValue({
+      isPro: false,
+      status: 'free',
+      tier: 'free',
+      periodEnd: null,
+    });
+    mocks.getOrCreateCustomer.mockResolvedValue('cus_public_domain');
+    mocks.checkoutSessionCreate.mockResolvedValue({
+      id: 'cs_public_domain',
+      url: 'https://checkout.stripe.com/public-domain',
+    });
+
+    const { POST } = await import('@/app/api/stripe/create-checkout/route');
+
+    const request = new NextRequest('https://www.vimens.com.br/api/stripe/create-checkout', {
+      method: 'POST',
+      headers: { origin: 'https://www.vimens.com.br', 'content-type': 'application/json' },
+      body: JSON.stringify({ planKey: 'pro_monthly' }),
+    });
+
+    const response = await POST(request);
+
+    expect(response.status).toBe(200);
+    expect(mocks.checkoutSessionCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        success_url: expect.stringContaining('https://www.vimens.com.br/dashboard?checkout=success'),
+        cancel_url: 'https://www.vimens.com.br/dashboard?checkout=canceled',
+      }),
+      expect.any(Object),
+    );
+  });
+
 });
 
 describe('billing checkout confirmation fallback', () => {
@@ -571,6 +662,7 @@ describe('billing portal', () => {
       profile: { stripe_customer_id: 'cus_123' },
     });
     mocks.createServerClient.mockResolvedValue(supabase.client);
+    mocks.adminCreateClient.mockReturnValue(supabase.client);
     mocks.portalSessionCreate.mockResolvedValue({
       url: 'https://billing.stripe.com/session/test',
     });
@@ -599,6 +691,7 @@ describe('billing portal', () => {
       profile: { stripe_customer_id: null },
     });
     mocks.createServerClient.mockResolvedValue(supabase.client);
+    mocks.adminCreateClient.mockReturnValue(supabase.client);
 
     const { POST } = await import('@/app/api/stripe/create-portal/route');
 
@@ -801,7 +894,16 @@ describe('refund subscription', () => {
           status: 'paid',
           amount_paid: 9900,
           created: Math.floor((Date.now() - (2 * 24 * 60 * 60 * 1000)) / 1000),
-          payment_intent: 'pi_refund_123',
+          payments: {
+            data: [{
+              status: 'paid',
+              is_default: true,
+              payment: {
+                type: 'payment_intent',
+                payment_intent: 'pi_refund_123',
+              },
+            }],
+          },
         },
       ],
     });
@@ -835,6 +937,7 @@ describe('refund subscription', () => {
       customer: 'cus_refund_123',
       subscription: 'sub_refund_123',
       limit: 10,
+      expand: ['data.payments'],
     });
     expect(mocks.refundCreate).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1136,7 +1239,7 @@ describe('billing webhook', () => {
     const json = await response.json();
 
     expect(response.status).toBe(400);
-    expect(json.error).toContain('Signature verification failed');
+    expect(json.error).toContain('Assinatura do webhook invalida');
     expect(mocks.recordFailedAttempt).toHaveBeenCalledWith('3.18.12.63');
     expect(mocks.checkEventIdempotencyAtomic).not.toHaveBeenCalled();
     expect(mocks.finalizeEvent).not.toHaveBeenCalled();
@@ -2015,6 +2118,11 @@ describe('billing webhook', () => {
       expect.any(String),
       expect.any(Number)
     );
+    expect(mocks.logWebhookAttempt).toHaveBeenCalledWith(expect.objectContaining({
+      eventId: 'evt_checkout_no_user',
+      success: true,
+      error: expect.stringContaining('user_id'),
+    }));
   });
 
   it('returns permanent_failure when subscription.updated identity is unresolvable', async () => {
@@ -2233,6 +2341,11 @@ describe('billing webhook', () => {
       expect.any(String),
       expect.any(Number)
     );
+    expect(mocks.logWebhookAttempt).toHaveBeenCalledWith(expect.objectContaining({
+      eventId: 'evt_checkout_db_fail',
+      success: false,
+      error: expect.stringContaining('Profile update failed'),
+    }));
   });
 
   it('returns 500 (transient_failure) when subscription upsert fails on customer.subscription.updated', async () => {

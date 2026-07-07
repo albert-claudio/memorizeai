@@ -5,6 +5,10 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
 import type { User } from '@supabase/supabase-js';
+import {
+  DOCUMENT_UPLOAD_ACKNOWLEDGEMENT_ERROR,
+  DOCUMENT_UPLOAD_ACKNOWLEDGEMENT_VERSION,
+} from '@/lib/document-upload-acknowledgement';
 
 // Generate unique ID
 function generateId() {
@@ -73,6 +77,8 @@ export default function UploadPage() {
   const [pdfText, setPdfText] = useState<string>('');
   const [extractedSlides, setExtractedSlides] = useState<ExtractedSlide[] | null>(null);
   const [extracting, setExtracting] = useState(false);
+  const [uploadAcknowledged, setUploadAcknowledged] = useState(false);
+  const [acknowledgementError, setAcknowledgementError] = useState('');
   
   // Processing state
   const [statusMessage, setStatusMessage] = useState('');
@@ -192,9 +198,17 @@ export default function UploadPage() {
     extractedText: string,
     slides?: ExtractedSlide[] | null,
   ): Promise<void> => {
-    const body: { sourceId: string; extractedText: string; slides?: ExtractedSlide[] } = {
+    const body: {
+      sourceId: string;
+      extractedText: string;
+      slides?: ExtractedSlide[];
+      uploadAcknowledged: boolean;
+      uploadAcknowledgementVersion: string;
+    } = {
       sourceId,
       extractedText,
+      uploadAcknowledged,
+      uploadAcknowledgementVersion: DOCUMENT_UPLOAD_ACKNOWLEDGEMENT_VERSION,
     };
     // Forward slide structure for semantic chunking in /api/process-source
     if (slides && slides.length > 0) {
@@ -219,6 +233,8 @@ export default function UploadPage() {
   const extractTextFromDocument = async (docFile: File): Promise<ExtractDocumentResult> => {
     const formData = new FormData();
     formData.append('file', docFile);
+    formData.append('uploadAcknowledged', String(uploadAcknowledged));
+    formData.append('uploadAcknowledgementVersion', DOCUMENT_UPLOAD_ACKNOWLEDGEMENT_VERSION);
     
     const response = await fetch('/api/extract-document', {
       method: 'POST',
@@ -235,6 +251,11 @@ export default function UploadPage() {
   };
 
   const handleFileSelect = async (selectedFile: File) => {
+    if (!uploadAcknowledged) {
+      setAcknowledgementError('Confirme a responsabilidade sobre direitos autorais e dados pessoais antes de selecionar um documento.');
+      return;
+    }
+
     const validTypes = ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/vnd.openxmlformats-officedocument.presentationml.presentation'];
     const ext = selectedFile.name.split('.').pop()?.toLowerCase();
     const isValidType = validTypes.includes(selectedFile.type) || ['pdf', 'docx', 'pptx'].includes(ext || '');
@@ -251,6 +272,7 @@ export default function UploadPage() {
     
     setFile(selectedFile);
     setExtracting(true);
+    setAcknowledgementError('');
     
     try {
       const result = await extractTextFromDocument(selectedFile);
@@ -268,6 +290,11 @@ export default function UploadPage() {
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
+    if (!uploadAcknowledged) {
+      setAcknowledgementError('Confirme a responsabilidade sobre direitos autorais e dados pessoais antes de soltar um documento.');
+      return;
+    }
+
     const droppedFile = e.dataTransfer.files[0];
     if (droppedFile) {
       handleFileSelect(droppedFile);
@@ -277,6 +304,11 @@ export default function UploadPage() {
   // Handle the simplified upload + processing flow
   const handleUploadAndProcess = async () => {
     if (!file || !user || !pdfText) return;
+
+    if (!uploadAcknowledged) {
+      setAcknowledgementError(DOCUMENT_UPLOAD_ACKNOWLEDGEMENT_ERROR);
+      return;
+    }
     
     setStep('processing');
     setStatusMessage('Enviando documento para o servidor...');
@@ -304,7 +336,7 @@ export default function UploadPage() {
       
       // Auto-redirect after 1.5 seconds
       setTimeout(() => {
-        router.push('/dashboard/runs');
+        router.push(`/dashboard/runs?sourceId=${encodeURIComponent(sourceId)}`);
       }, 1500);
       
     } catch (error) {
@@ -488,26 +520,97 @@ export default function UploadPage() {
         {/* Step: Upload (available when user has quota or is Pro) */}
         {step === 'upload' && canUpload && (
           <>
+            <div
+              style={{
+                padding: 18,
+                marginBottom: 20,
+                background: 'rgba(255,255,255,0.03)',
+                border: `1px solid ${acknowledgementError ? 'rgba(239, 68, 68, 0.45)' : 'rgba(255,255,255,0.08)'}`,
+                borderRadius: 14,
+              }}
+            >
+              <label
+                htmlFor="document-upload-acknowledgement"
+                style={{
+                  display: 'flex',
+                  gap: 12,
+                  alignItems: 'flex-start',
+                  cursor: 'pointer',
+                }}
+              >
+                <input
+                  id="document-upload-acknowledgement"
+                  type="checkbox"
+                  checked={uploadAcknowledged}
+                  onChange={(event) => {
+                    setUploadAcknowledged(event.target.checked);
+                    if (event.target.checked) {
+                      setAcknowledgementError('');
+                    }
+                  }}
+                  aria-describedby="document-upload-acknowledgement-copy"
+                  style={{
+                    width: 18,
+                    height: 18,
+                    marginTop: 2,
+                    accentColor: '#22c55e',
+                    flex: '0 0 auto',
+                  }}
+                />
+                <span
+                  id="document-upload-acknowledgement-copy"
+                  style={{ fontSize: 13, lineHeight: 1.55, color: '#d4d4d8' }}
+                >
+                  Confirmo que tenho direito ou autorizacao para enviar este material e que,
+                  se houver dados pessoais de terceiros, possuo base legal adequada. Entendo
+                  que o arquivo e o texto extraido serao armazenados e processados para gerar
+                  materiais de estudo, conforme os{' '}
+                  <Link href="/termos" style={{ color: '#22c55e', textDecoration: 'none' }}>
+                    Termos
+                  </Link>{' '}
+                  e a{' '}
+                  <Link href="/privacidade" style={{ color: '#22c55e', textDecoration: 'none' }}>
+                    Politica de Privacidade
+                  </Link>
+                  .
+                </span>
+              </label>
+              {acknowledgementError && (
+                <p style={{ color: '#f87171', fontSize: 12, lineHeight: 1.5, marginTop: 10 }}>
+                  {acknowledgementError}
+                </p>
+              )}
+            </div>
+
             {/* Drop Zone */}
             <div
               onDragOver={(e) => e.preventDefault()}
               onDrop={handleDrop}
-              onClick={() => fileInputRef.current?.click()}
+              onClick={() => {
+                if (!uploadAcknowledged) {
+                  setAcknowledgementError('Confirme a responsabilidade sobre direitos autorais e dados pessoais antes de selecionar um documento.');
+                  return;
+                }
+
+                fileInputRef.current?.click();
+              }}
               style={{
                 border: '2px dashed rgba(255,255,255,0.1)',
                 borderRadius: 20,
                 padding: 48,
                 textAlign: 'center',
-                cursor: 'pointer',
+                cursor: uploadAcknowledged ? 'pointer' : 'not-allowed',
                 transition: 'all 0.2s ease',
                 background: file ? 'rgba(34, 197, 94, 0.05)' : 'transparent',
                 borderColor: file ? '#22c55e' : 'rgba(255,255,255,0.1)',
+                opacity: uploadAcknowledged ? 1 : 0.72,
               }}
             >
               <input
                 ref={fileInputRef}
                 type="file"
                 accept=".pdf,.docx,.pptx"
+                disabled={!uploadAcknowledged || extracting}
                 onChange={(e) => e.target.files?.[0] && handleFileSelect(e.target.files[0])}
                 style={{ display: 'none' }}
               />
@@ -589,6 +692,7 @@ export default function UploadPage() {
             {file && pdfText && (
               <button
                 onClick={handleUploadAndProcess}
+                disabled={!uploadAcknowledged}
                 style={{
                   width: '100%',
                   marginTop: 24,
@@ -603,8 +707,9 @@ export default function UploadPage() {
                   color: 'white',
                   fontSize: 17,
                   fontWeight: 600,
-                  cursor: 'pointer',
-                  boxShadow: '0 4px 20px rgba(34, 197, 94, 0.3)',
+                  cursor: uploadAcknowledged ? 'pointer' : 'not-allowed',
+                  opacity: uploadAcknowledged ? 1 : 0.65,
+                  boxShadow: uploadAcknowledged ? '0 4px 20px rgba(34, 197, 94, 0.3)' : 'none',
                 }}
               >
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

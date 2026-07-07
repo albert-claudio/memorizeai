@@ -71,6 +71,29 @@ describe('source digest helpers', () => {
     expect(context).toContain('"Trecho literal"');
   });
 
+  it('keeps OpenAI digest flashcard context bounded with stable chunk ids', () => {
+    const digest = {
+      summary: 'Resumo central '.repeat(40),
+      topics: ['Tema 1', 'Tema 2'],
+      flashcard_context: Array.from({ length: 20 }, (_, index) => ({
+        id: `chunk-${index}`,
+        fact: `Fato cobravel ${index} `.repeat(12),
+        detail: `Detalhe ${index} `.repeat(12),
+        quote: `Trecho literal ${index} `.repeat(12),
+      })),
+      pitfalls: ['confusao frequente'],
+    };
+
+    const openaiContext = formatDigestForFlashcards(digest, 'openai', false);
+    const groqContext = formatDigestForFlashcards(digest, 'groq', false);
+
+    expect(openaiContext).not.toBeNull();
+    expect(groqContext).not.toBeNull();
+    expect(openaiContext!.length).toBeLessThanOrEqual(groqContext!.length);
+    expect(openaiContext).toContain('@id=chunk-0');
+    expect(openaiContext).not.toContain('@id=chunk-19');
+  });
+
   it('builds a deterministic fallback digest from chunks when AI digest is unavailable', () => {
     const digest = buildFallbackSourceDigestContent([
       {

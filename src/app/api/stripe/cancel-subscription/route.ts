@@ -3,42 +3,7 @@ import Stripe from 'stripe';
 import { createClient } from '@/lib/supabase/server';
 import { createClient as createSupabaseAdmin, type SupabaseClient } from '@supabase/supabase-js';
 import { stripe } from '@/lib/billing/stripe';
-import { getBaseUrl } from '@/lib/url';
-
-function normalizeOrigin(value: string | null): string | null {
-  if (!value) {
-    return null;
-  }
-
-  try {
-    return new URL(value).origin;
-  } catch {
-    return null;
-  }
-}
-
-function getRequestOrigin(request: NextRequest): string | null {
-  const originHeader = request.headers.get('origin');
-  if (originHeader) {
-    return normalizeOrigin(originHeader);
-  }
-
-  return normalizeOrigin(request.headers.get('referer'));
-}
-
-function getAllowedOrigins(request: NextRequest): Set<string> {
-  return new Set(
-    [
-      request.nextUrl.origin,
-      getBaseUrl(),
-      'https://vimens.app',
-      'https://www.vimens.app',
-      'http://localhost:3000',
-    ]
-      .map((origin) => normalizeOrigin(origin ?? null))
-      .filter((origin): origin is string => Boolean(origin))
-  );
-}
+import { getAllowedRequestOrigins, getRequestOrigin } from '@/lib/security/request-origin';
 
 function toUnixMs(value: unknown): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
@@ -158,7 +123,7 @@ async function resolveStripeCustomerId(
 
 export async function POST(request: NextRequest) {
   try {
-    const allowedOrigins = getAllowedOrigins(request);
+    const allowedOrigins = getAllowedRequestOrigins(request);
     const requestOrigin = getRequestOrigin(request);
 
     if (!requestOrigin || !allowedOrigins.has(requestOrigin)) {

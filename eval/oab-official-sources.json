@@ -1,0 +1,52 @@
+{
+  "capturedAt": "2026-06-27",
+  "source": "https://examedeordem.oab.org.br/EditaisProvas?NumeroExame=17734",
+  "exam": {
+    "id": "17734",
+    "name": "46º EXAME DE ORDEM UNIFICADO",
+    "organizer": "FGV",
+    "portal": "OAB Conselho Federal"
+  },
+  "objectivePhase": {
+    "examDate": "2026-05-03",
+    "questionBookType1": "https://s.oab.org.br/arquivos/2026/05/b5f2a4bd-8885-4f42-909f-a2ecac329dab.pdf",
+    "questionBookType2": "https://s.oab.org.br/arquivos/2026/05/9e37bd12-07a3-4cdb-aef9-09bb663721c5.pdf",
+    "questionBookType3": "https://s.oab.org.br/arquivos/2026/05/c58cbc52-71d3-4991-a415-97c0b31c959e.pdf",
+    "questionBookType4": "https://s.oab.org.br/arquivos/2026/05/44ac1fe4-5f00-43c8-a7c8-647c978a9012.pdf",
+    "preliminaryAnswerKey": "https://s.oab.org.br/arquivos/2026/05/96ee98eb-891b-4ad4-9fa0-fa20b96c3847.pdf",
+    "definitiveAnswerKey": "https://s.oab.org.br/arquivos/2026/05/0662d6ed-01a3-4ee5-905f-a6704d72992b.pdf"
+  },
+  "practicalPhase": {
+    "examDate": "2026-06-21",
+    "areas": {
+      "Direito Administrativo": {
+        "questionBook": "https://s.oab.org.br/arquivos/2026/06/b5df3a8f-0156-445d-a74b-2182e4909641.pdf",
+        "answerStandard": "https://s.oab.org.br/arquivos/2026/06/755b96cc-c534-4364-bfcd-5853c84f01f6.pdf"
+      },
+      "Direito Civil": {
+        "questionBook": "https://s.oab.org.br/arquivos/2026/06/2322b552-47d7-4ff0-97d1-48a233c338cb.pdf",
+        "answerStandard": "https://s.oab.org.br/arquivos/2026/06/600dcb51-fadb-4934-851e-fca5eae4a39a.pdf"
+      },
+      "Direito Constitucional": {
+        "questionBook": "https://s.oab.org.br/arquivos/2026/06/92d83496-9390-48e2-9693-fcbe154b69dc.pdf",
+        "answerStandard": "https://s.oab.org.br/arquivos/2026/06/58040572-6420-48ca-b4c7-d9b29093bafb.pdf"
+      },
+      "Direito do Trabalho": {
+        "questionBook": "https://s.oab.org.br/arquivos/2026/06/65049e67-cd4b-4456-8bb9-e2f0a0614620.pdf",
+        "answerStandard": "https://s.oab.org.br/arquivos/2026/06/7ff53731-ff19-47ec-bfcf-8fbda6bab2ad.pdf"
+      },
+      "Direito Empresarial": {
+        "questionBook": "https://s.oab.org.br/arquivos/2026/06/79f87627-066f-418b-a81a-cacd9ce418fd.pdf",
+        "answerStandard": "https://s.oab.org.br/arquivos/2026/06/9e07e76a-311c-4471-ac37-2ea0231504a2.pdf"
+      },
+      "Direito Penal": {
+        "questionBook": "https://s.oab.org.br/arquivos/2026/06/81b0b6df-7c9e-45e0-9968-9b2a2f7c282a.pdf",
+        "answerStandard": "https://s.oab.org.br/arquivos/2026/06/c6ad57ee-eb1e-41f1-99f9-7b3efaae1648.pdf"
+      },
+      "Direito Tributário": {
+        "questionBook": "https://s.oab.org.br/arquivos/2026/06/44de6c29-d4d1-4f21-9d86-0e0d8e9ca2de.pdf",
+        "answerStandard": "https://s.oab.org.br/arquivos/2026/06/7f3eb080-f4e2-4627-8f1d-c205cf483f35.pdf"
+      }
+    }
+  }
+}

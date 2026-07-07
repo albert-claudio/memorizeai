@@ -24,6 +24,7 @@ export async function callGeminiText(request: AITextRequest): Promise<AITextResu
         },
       }),
     },
+    request.timeoutMs,
   );
 
   if (!response.ok) {

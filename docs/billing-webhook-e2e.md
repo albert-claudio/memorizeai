@@ -20,7 +20,10 @@ Validate true end-to-end billing behavior in staging:
    - `NEXT_PUBLIC_SUPABASE_URL`
    - `SUPABASE_SERVICE_ROLE_KEY`
    - `BILLING_E2E_ENABLED=true`
+   - `BILLING_CHECKOUT_E2E_ENABLED=true`
+   - `BILLING_APP_ROUTE_E2E_ENABLED=true`
    - `BILLING_E2E_SECRET=<strong-random-token>`
+   - `APP_ENV=staging` when the staging host does not provide `VERCEL_ENV=preview`
 3. Stripe webhook endpoint (test mode):
    - URL: `https://<staging>/api/stripe/webhook`
    - Events:
@@ -66,6 +69,18 @@ When checkout E2E is enabled, CI also runs:
 
 - `npx playwright install --with-deps chromium`
 
+## Staging launch command
+
+Run the complete staging validation with:
+
+```bash
+npm run stripe:staging:validate
+```
+
+This uses the same live integration runner as CI. With all billing flags enabled it validates webhooks, hosted Checkout, authenticated confirmation/status/portal routes, cancellation, and refund.
+
+For the public-launch acceptance artifact, run the full command sequence in `docs/public-launch-billing-evidence.md`. The command writes a sanitized JSON summary under `artifacts/billing/<timestamp>/` when `BILLING_E2E_ARTIFACT_DIR` is set.
+
 ## What the script validates
 
 ## Stage 1: Real webhook integration (no browser checkout)
@@ -75,9 +90,10 @@ When checkout E2E is enabled, CI also runs:
 3. Calls Stripe API to update subscription (`cancel_at_period_end=true`).
 4. Polls Supabase until webhook changes DB state.
 5. Replays the exact same event payload (signed) and expects `duplicate=true`.
-6. Calls Stripe API to cancel subscription.
-7. Polls Supabase until downgrade is applied.
-8. Cleans up Stripe customer and auth user.
+6. Replays signed synthetic webhook events and verifies `transient_failure` retry behavior and terminal `permanent_failure` duplicate blocking.
+7. Calls Stripe API to cancel subscription.
+8. Polls Supabase until downgrade is applied.
+9. Cleans up Stripe customer and auth user.
 
 ## Stage 2: Real checkout UI integration (Playwright)
 
@@ -92,3 +108,16 @@ When checkout E2E is enabled, CI also runs:
 5. Polls Supabase until webhook upgrades profile/subscription.
 6. Verifies `checkout.session.completed` was logged as successful.
 7. Cleans up created subscription/customer/user.
+
+## Stage 3: Authenticated app billing routes
+
+1. Creates an integration checkout session and integration user.
+2. Signs the user in through `/api/auth/csrf` and `/api/auth/login`.
+3. Completes hosted Checkout in Chromium.
+4. Calls `/api/stripe/confirm-checkout` with the real `session_id`.
+5. Calls `/api/stripe/subscription-status` and expects paid Pro access, not free-trial masking.
+6. Calls `/api/stripe/create-portal` and expects a Stripe Billing Portal URL.
+7. Creates a second integration subscription and calls `/api/stripe/cancel-subscription`.
+8. Verifies Stripe `cancel_at_period_end=true` and the DB subscription row.
+9. Creates a third integration subscription and calls `/api/stripe/refund-subscription`.
+10. Verifies a real Stripe refund exists and the DB profile is canceled/free.

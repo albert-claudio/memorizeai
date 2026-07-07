@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
+import { getAppUrl } from '@/lib/url';
 
 // ============================================================================
 // ICONS
@@ -207,6 +208,9 @@ export default function LoginPage() {
       const { error } = await supabase.auth.resend({
         type: 'signup',
         email: email,
+        options: {
+          emailRedirectTo: getAppUrl('/auth/callback?type=signup'),
+        },
       });
 
       if (error) {
@@ -266,7 +270,7 @@ export default function LoginPage() {
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
-        redirectTo: `${window.location.origin}/auth/callback`,
+        redirectTo: getAppUrl('/auth/callback'),
       },
     });
     if (error) {

@@ -47,8 +47,26 @@ export interface FocusDeck {
   avgDifficulty: number;
   avgStability: number;
   errorRate7d: number;
+  errorRate30d: number;
+  accuracy7d: number | null;
+  accuracy30d: number | null;
+  trendDelta: number | null;
   riskScore: number;
+  riskLevel: 'low' | 'medium' | 'high';
+  primaryIssue: DiagnosticIssue;
+  riskDrivers: string[];
 }
+
+export type DiagnosticIssue =
+  | 'high_error'
+  | 'worsening'
+  | 'overdue'
+  | 'leeches'
+  | 'repeated_lapses'
+  | 'low_stability'
+  | 'high_difficulty'
+  | 'low_volume'
+  | 'none';
 
 export interface WeakTopic {
   key: string;
@@ -56,11 +74,19 @@ export interface WeakTopic {
   type: 'materia' | 'tema';
   errorRate7d: number;
   errorRate30d: number;
+  accuracy7d: number | null;
+  accuracy30d: number | null;
   totalReviews7d: number;
+  totalReviews30d: number;
   avgLapses: number;
   avgDifficulty: number;
   avgStability: number;
   isWeak: boolean;
+  weaknessScore: number;
+  confidence: 'low' | 'medium' | 'high';
+  trendDelta: number | null;
+  primaryIssue: DiagnosticIssue;
+  recommendation: string;
 }
 
 export interface Reinforcement {
@@ -69,7 +95,7 @@ export interface Reinforcement {
   materia: string | null;
   tema: string | null;
   reason: string;
-  reasonType: 'high_error' | 'overdue' | 'leeches' | 'low_stability';
+  reasonType: Exclude<DiagnosticIssue, 'worsening' | 'repeated_lapses' | 'high_difficulty' | 'low_volume' | 'none'>;
   overdueCards: number;
   errorRate7d: number;
   avgStability: number;
@@ -106,6 +132,123 @@ export interface DashboardStatsPayload {
 // PURE COMPUTATION — testable without DB
 // ============================================================================
 
+function round1(value: number): number {
+  return Math.round(value * 10) / 10;
+}
+
+function accuracyFromErrorRate(errorRate: number, reviews: number): number | null {
+  if (reviews <= 0) return null;
+  return round1(Math.max(0, Math.min(100, 100 - errorRate)));
+}
+
+function getConfidence(totalReviews7d: number, totalReviews30d: number): WeakTopic['confidence'] {
+  if (totalReviews7d >= 8 || totalReviews30d >= 20) return 'high';
+  if (totalReviews7d >= 3 || totalReviews30d >= 8) return 'medium';
+  return 'low';
+}
+
+function getRiskLevel(score: number): FocusDeck['riskLevel'] {
+  if (score >= 9) return 'high';
+  if (score >= 4) return 'medium';
+  return 'low';
+}
+
+function buildRiskDrivers(input: {
+  errorRate7d: number;
+  errorRate30d: number;
+  totalReviews7d: number;
+  overdueCards: number;
+  leechCards: number;
+  avgLapses: number;
+  avgDifficulty: number;
+  avgStability: number;
+}): string[] {
+  const drivers: string[] = [];
+
+  if (input.totalReviews7d >= 3 && input.errorRate7d >= 30) {
+    drivers.push(`${round1(input.errorRate7d)}% de erro em 7 dias`);
+  } else if (input.errorRate30d >= 35) {
+    drivers.push(`${round1(input.errorRate30d)}% de erro em 30 dias`);
+  }
+  if (input.overdueCards >= 5) drivers.push(`${input.overdueCards} cards atrasados`);
+  if (input.leechCards > 0) drivers.push(`${input.leechCards} cards com erro repetido`);
+  if (input.avgLapses > 3) drivers.push(`${round1(input.avgLapses)} lapsos em media`);
+  if (input.avgStability < 2) drivers.push(`estabilidade baixa (${round1(input.avgStability)}d)`);
+  if (input.avgDifficulty > 7) drivers.push(`dificuldade alta (${round1(input.avgDifficulty)})`);
+
+  return drivers;
+}
+
+function pickPrimaryIssue(input: {
+  errorRate7d: number;
+  errorRate30d: number;
+  totalReviews7d: number;
+  totalReviews30d: number;
+  trendDelta: number | null;
+  overdueCards?: number;
+  leechCards?: number;
+  avgLapses: number;
+  avgDifficulty: number;
+  avgStability: number;
+}): DiagnosticIssue {
+  if (input.totalReviews7d < 3 && input.totalReviews30d < 6) {
+    if (input.avgStability < 2) return 'low_stability';
+    if (input.avgLapses > 3) return 'repeated_lapses';
+    return 'low_volume';
+  }
+
+  if (input.totalReviews7d >= 3 && input.errorRate7d >= 35) return 'high_error';
+  if (input.trendDelta != null && input.trendDelta >= 15 && input.totalReviews7d >= 3) return 'worsening';
+  if ((input.overdueCards ?? 0) >= 10) return 'overdue';
+  if ((input.leechCards ?? 0) >= 3) return 'leeches';
+  if (input.avgLapses > 3) return 'repeated_lapses';
+  if (input.avgStability < 2) return 'low_stability';
+  if (input.avgDifficulty > 7) return 'high_difficulty';
+  if (input.totalReviews30d >= 6 && input.errorRate30d >= 35) return 'high_error';
+  return 'none';
+}
+
+function buildRecommendation(issue: DiagnosticIssue, label: string): string {
+  switch (issue) {
+    case 'high_error':
+      return `Revisar a teoria de ${label} e fazer uma rodada curta de questoes antes de novos cards.`;
+    case 'worsening':
+      return `${label} piorou nos ultimos dias. Refaça os erros recentes e compare com a explicacao.`;
+    case 'overdue':
+      return `Zerar os cards atrasados de ${label} antes de gerar novo conteudo.`;
+    case 'leeches':
+      return `Quebrar os cards problematicos de ${label} em perguntas menores.`;
+    case 'repeated_lapses':
+      return `Reestudar os fundamentos de ${label}; os lapsos indicam esquecimento recorrente.`;
+    case 'low_stability':
+      return `Fazer revisoes mais frequentes de ${label} ate a estabilidade subir.`;
+    case 'high_difficulty':
+      return `Intercalar ${label} com exemplos resolvidos para reduzir a dificuldade percebida.`;
+    case 'low_volume':
+      return `Fazer mais revisoes de ${label} para o diagnostico ficar confiavel.`;
+    default:
+      return `Manter ${label} no ciclo normal de revisoes.`;
+  }
+}
+
+function isWeakSignal(input: {
+  errorRate7d: number;
+  errorRate30d: number;
+  totalReviews7d: number;
+  totalReviews30d: number;
+  avgLapses: number;
+  avgStability: number;
+  trendDelta: number | null;
+}): boolean {
+  return (
+    (input.totalReviews7d >= 3 && input.errorRate7d >= 30) ||
+    (input.totalReviews30d >= 6 && input.errorRate30d >= 35) ||
+    input.avgLapses > 3 ||
+    input.avgStability < 2 ||
+    (input.trendDelta != null && input.totalReviews7d >= 3 && input.trendDelta >= 20)
+  );
+}
+
 export function computeDashboardStats(
   decks: RawDeck[],
   cards: RawCard[],
@@ -115,7 +258,9 @@ export function computeDashboardStats(
   now: number,
   tzOffset: number,
   startOfDay: number,
+  seriesDays: 7 | 14 = 7,
 ): DashboardStatsPayload {
+  const safeSeriesDays = seriesDays === 14 ? 14 : 7;
   const DAY_MS = 24 * 60 * 60 * 1000;
   const sevenDaysAgo = now - 7 * DAY_MS;
   const thirtyDaysAgo = now - 30 * DAY_MS;
@@ -188,16 +333,47 @@ export function computeDashboardStats(
     const avgDifficulty = ds.sumDifficulty / n;
     const avgStability = ds.sumStability / n;
 
-    const revAgg = deckRevStats[deck.id];
-    const errorRate7d = revAgg && revAgg.total7d > 0 ? revAgg.errors7d / revAgg.total7d : 0;
+    const revAgg = deckRevStats[deck.id] || { total7d: 0, errors7d: 0, total30d: 0, errors30d: 0 };
+    const errorRate7d = revAgg.total7d > 0 ? (revAgg.errors7d / revAgg.total7d) * 100 : 0;
+    const errorRate30d = revAgg.total30d > 0 ? (revAgg.errors30d / revAgg.total30d) * 100 : 0;
+    const trendDelta = revAgg.total7d > 0 && revAgg.total30d >= 6
+      ? round1(errorRate7d - errorRate30d)
+      : null;
+    const confidenceMultiplier = revAgg.total7d >= 3 || revAgg.total30d >= 8 ? 1 : 0.55;
+
+    const riskDrivers = buildRiskDrivers({
+      errorRate7d,
+      errorRate30d,
+      totalReviews7d: revAgg.total7d,
+      overdueCards: ds.overdue,
+      leechCards: ds.leech,
+      avgLapses,
+      avgDifficulty,
+      avgStability,
+    });
+    const primaryIssue = pickPrimaryIssue({
+      errorRate7d,
+      errorRate30d,
+      totalReviews7d: revAgg.total7d,
+      totalReviews30d: revAgg.total30d,
+      trendDelta,
+      overdueCards: ds.overdue,
+      leechCards: ds.leech,
+      avgLapses,
+      avgDifficulty,
+      avgStability,
+    });
 
     const riskScore =
-      ds.overdue * 1.0 +
-      ds.leech * 2.0 +
-      avgLapses * 0.8 +
-      Math.max(0, avgDifficulty - 5) * 0.6 +
-      Math.max(0, 4 - avgStability) * 0.5 +
-      errorRate7d * 5.0;
+      ds.overdue * 0.75 +
+      ds.leech * 2.2 +
+      avgLapses * 0.9 +
+      Math.max(0, avgDifficulty - 5) * 0.65 +
+      Math.max(0, 4 - avgStability) * 0.8 +
+      errorRate7d * 0.08 * confidenceMultiplier +
+      errorRate30d * 0.035 +
+      Math.max(0, trendDelta ?? 0) * 0.06;
+    const roundedRiskScore = round1(riskScore);
 
     return {
       deckId: deck.id,
@@ -207,11 +383,18 @@ export function computeDashboardStats(
       tema: deck.tema,
       overdueCards: ds.overdue,
       leechCards: ds.leech,
-      avgLapses: Math.round(avgLapses * 10) / 10,
-      avgDifficulty: Math.round(avgDifficulty * 10) / 10,
-      avgStability: Math.round(avgStability * 10) / 10,
-      errorRate7d: Math.round(errorRate7d * 1000) / 10,
-      riskScore: Math.round(riskScore * 10) / 10,
+      avgLapses: round1(avgLapses),
+      avgDifficulty: round1(avgDifficulty),
+      avgStability: round1(avgStability),
+      errorRate7d: round1(errorRate7d),
+      errorRate30d: round1(errorRate30d),
+      accuracy7d: accuracyFromErrorRate(errorRate7d, revAgg.total7d),
+      accuracy30d: accuracyFromErrorRate(errorRate30d, revAgg.total30d),
+      trendDelta,
+      riskScore: roundedRiskScore,
+      riskLevel: getRiskLevel(roundedRiskScore),
+      primaryIssue,
+      riskDrivers,
     };
   })
   .filter(d => d.riskScore > 0)
@@ -260,22 +443,84 @@ export function computeDashboardStats(
       const avgLapses = t.sumLapses / n;
       const avgDifficulty = t.sumDifficulty / n;
       const avgStability = t.sumStability / n;
+      const trendDelta = t.rev7d > 0 && t.rev30d >= 6
+        ? round1(errorRate7d - errorRate30d)
+        : null;
+      const confidence = getConfidence(t.rev7d, t.rev30d);
+      const isWeak = isWeakSignal({
+        errorRate7d,
+        errorRate30d,
+        totalReviews7d: t.rev7d,
+        totalReviews30d: t.rev30d,
+        avgLapses,
+        avgStability,
+        trendDelta,
+      });
+      const primaryIssue = pickPrimaryIssue({
+        errorRate7d,
+        errorRate30d,
+        totalReviews7d: t.rev7d,
+        totalReviews30d: t.rev30d,
+        trendDelta,
+        avgLapses,
+        avgDifficulty,
+        avgStability,
+      });
+      const confidenceWeight = confidence === 'high' ? 1 : confidence === 'medium' ? 0.82 : 0.48;
+      const effectiveError = t.rev7d >= 3 ? errorRate7d : errorRate30d * 0.65;
+      const weaknessScore =
+        (isWeak ? 1000 : 0) +
+        effectiveError * 2 * confidenceWeight +
+        errorRate30d * 0.8 +
+        Math.max(0, trendDelta ?? 0) * 2 +
+        avgLapses * 15 +
+        Math.max(0, 2 - avgStability) * 25 +
+        Math.max(0, avgDifficulty - 5) * 8;
+      const roundedWeaknessScore = round1(weaknessScore);
 
       return {
         key,
         label: t.label,
         type: t.type,
-        errorRate7d: Math.round(errorRate7d * 10) / 10,
-        errorRate30d: Math.round(errorRate30d * 10) / 10,
+        errorRate7d: round1(errorRate7d),
+        errorRate30d: round1(errorRate30d),
+        accuracy7d: accuracyFromErrorRate(errorRate7d, t.rev7d),
+        accuracy30d: accuracyFromErrorRate(errorRate30d, t.rev30d),
         totalReviews7d: t.rev7d,
-        avgLapses: Math.round(avgLapses * 10) / 10,
-        avgDifficulty: Math.round(avgDifficulty * 10) / 10,
-        avgStability: Math.round(avgStability * 10) / 10,
-        isWeak: errorRate7d > 30 || avgLapses > 3 || avgStability < 2,
+        totalReviews30d: t.rev30d,
+        avgLapses: round1(avgLapses),
+        avgDifficulty: round1(avgDifficulty),
+        avgStability: round1(avgStability),
+        isWeak,
+        weaknessScore: roundedWeaknessScore,
+        confidence,
+        trendDelta,
+        primaryIssue,
+        recommendation: buildRecommendation(primaryIssue, t.label),
       };
     })
     .filter(t => t.totalReviews7d > 0 || t.avgLapses > 0)
-    .sort((a, b) => b.errorRate7d - a.errorRate7d)
+    .sort((a, b) => b.weaknessScore - a.weaknessScore)
+    .map((t) => ({
+      key: t.key,
+      label: t.label,
+      type: t.type,
+      errorRate7d: t.errorRate7d,
+      errorRate30d: t.errorRate30d,
+      accuracy7d: t.accuracy7d,
+      accuracy30d: t.accuracy30d,
+      totalReviews7d: t.totalReviews7d,
+      totalReviews30d: t.totalReviews30d,
+      avgLapses: t.avgLapses,
+      avgDifficulty: t.avgDifficulty,
+      avgStability: t.avgStability,
+      isWeak: t.isWeak,
+      weaknessScore: t.weaknessScore,
+      confidence: t.confidence,
+      trendDelta: t.trendDelta,
+      primaryIssue: t.primaryIssue,
+      recommendation: t.recommendation,
+    }))
     .slice(0, 10);
 
   // ── reinforcement ────────────────────────────────────────────────────────
@@ -383,8 +628,8 @@ export function computeDashboardStats(
     }
   });
 
-  const performanceSeries = Array.from({ length: 7 }, (_, index) => {
-    const dayStartMs = startOfDay - (6 - index) * DAY_MS;
+  const performanceSeries = Array.from({ length: safeSeriesDays }, (_, index) => {
+    const dayStartMs = startOfDay - (safeSeriesDays - 1 - index) * DAY_MS;
     const day = getDayString(dayStartMs);
     const aggregate = reviewSeriesMap[day];
 
@@ -465,6 +710,8 @@ export async function GET(request: Request) {
   const url = new URL(request.url);
   const tzOffset = parseInt(url.searchParams.get('tzOffset') || '0', 10);
   const startOfDay = parseInt(url.searchParams.get('startOfDay') || Date.now().toString(), 10);
+  const seriesDaysParam = parseInt(url.searchParams.get('seriesDays') || '7', 10);
+  const seriesDays: 7 | 14 = seriesDaysParam === 14 ? 14 : 7;
   const currentMs = Date.now();
 
   try {
@@ -518,6 +765,7 @@ export async function GET(request: Request) {
       currentMs,
       tzOffset,
       startOfDay,
+      seriesDays,
     );
 
     return NextResponse.json(payload);

@@ -15,7 +15,9 @@ import {
   buildMonthlyUsage,
   type MonthlyUsage,
 } from '@/lib/billing/run-entitlement';
+import { authorizeCardCreation, authorizeDeckCreation } from '@/lib/billing/tier-limits';
 import { triggerRunDispatch } from '@/lib/queue/trigger-run-dispatch';
+import { VALID_BANCAS, VALID_DIFICULDADES } from '@/lib/runs/process/prompts/banca';
 
 // Generate cryptographically secure random ID
 function generateId() {
@@ -53,7 +55,8 @@ export interface CreateRunResult {
 }
 
 /**
- * Get user's monthly generation usage for UI display.
+ * Legacy monthly generation usage for informational UI display.
+ * Public launch quotas are enforced by the run entitlement check.
  */
 export async function getMonthlyUsage(): Promise<MonthlyUsage | null> {
   const supabase = await createSupabaseServer();
@@ -161,25 +164,43 @@ export async function createRun(
         return { success: false, error: 'Deck não encontrado ou acesso negado' };
       }
       validatedDeckId = deck.id;
+
+      const cardCapacity = await authorizeCardCreation(
+        adminSupabase,
+        deck.id,
+        user.id,
+        entitlement.validatedTargetCount,
+      );
+      if (!cardCapacity.allowed) {
+        return { success: false, error: cardCapacity.reason };
+      }
+    } else if (objective === 'flashcards') {
+      const deckCapacity = await authorizeDeckCreation(adminSupabase, user.id);
+      if (!deckCapacity.allowed) {
+        return { success: false, error: deckCapacity.reason };
+      }
     }
     
     // 4. Create the run — enqueue instead of fire-and-forget
     const now = Date.now();
     const runId = generateId();
     
-    // targetCount already validated by entitlement check
+    // targetCount already clamped by entitlement check
     const validatedTargetCount = entitlement.validatedTargetCount;
     
     // Backend-enforced: only questoes_banca gets banca/dificuldade
-    const VALID_BANCAS: Banca[] = ['FCC', 'FGV', 'CESPE'];
-    const VALID_DIFICULDADES: Dificuldade[] = ['facil', 'medio', 'dificil', 'muito_dificil'];
+    const safeBanca = typeof banca === 'string' ? banca : null;
+    const safeDificuldade = typeof dificuldade === 'string' ? dificuldade : null;
 
-    const safeBanca = objective === 'questoes_banca' && banca && VALID_BANCAS.includes(banca)
-      ? banca
-      : null;
-    const safeDificuldade = objective === 'questoes_banca' && dificuldade && VALID_DIFICULDADES.includes(dificuldade)
-      ? dificuldade
-      : null;
+    if (objective === 'questoes_banca') {
+      if (!safeBanca || !VALID_BANCAS.includes(safeBanca)) {
+        return { success: false, error: `Banca invalida. Use: ${VALID_BANCAS.join(', ')}` };
+      }
+
+      if (!safeDificuldade || !VALID_DIFICULDADES.includes(safeDificuldade)) {
+        return { success: false, error: `Dificuldade invalida. Use: ${VALID_DIFICULDADES.join(', ')}` };
+      }
+    }
 
     // Build insert payload — only include banca/dificuldade when non-null
     // so the insert works even before the migration is applied
@@ -200,8 +221,10 @@ export async function createRun(
       created_at: now,
       updated_at: now,
     };
-    if (safeBanca) runPayload.banca = safeBanca;
-    if (safeDificuldade) runPayload.dificuldade = safeDificuldade;
+    if (objective === 'questoes_banca') {
+      runPayload.banca = safeBanca;
+      runPayload.dificuldade = safeDificuldade;
+    }
 
     const { error: insertError } = await supabase
       .from('runs')
@@ -298,6 +321,9 @@ export async function cancelRun(runId: string): Promise<{ success: boolean; erro
     .from('runs')
     .update({
       status: 'erro',
+      next_attempt_at: null,
+      lease_expires_at: null,
+      processing_node: null,
       error_message: 'Cancelado pelo usuário',
       updated_at: Date.now(),
     })

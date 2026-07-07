@@ -9,6 +9,7 @@ Os endpoints abaixo continuam existindo e continuam com metodo `GET`:
 - `/api/cron/recover-runs`
 - `/api/cron/health-check`
 - `/api/cron/alerts`
+- `/api/cron/system-report`
 
 Agora eles aceitam:
 
@@ -23,6 +24,7 @@ O fallback existe apenas para evitar janela de indisponibilidade durante o cutov
 - [src/app/api/cron/recover-runs/route.ts](C:/Users/Albert/Documents/memorizeai/src/app/api/cron/recover-runs/route.ts)
 - [src/app/api/cron/health-check/route.ts](C:/Users/Albert/Documents/memorizeai/src/app/api/cron/health-check/route.ts)
 - [src/app/api/cron/alerts/route.ts](C:/Users/Albert/Documents/memorizeai/src/app/api/cron/alerts/route.ts)
+- [src/app/api/cron/system-report/route.ts](C:/Users/Albert/Documents/memorizeai/src/app/api/cron/system-report/route.ts)
 
 ## Pre-requisitos
 
@@ -42,6 +44,8 @@ Configure no ambiente de producao:
 - `RUNS_PROCESS_INTERNAL_SECRET`
 - `NEXT_PUBLIC_APP_URL`
 - `WEBHOOK_ALERT_URL`
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_CHAT_ID`
 - `UPSTASH_REDIS_REST_URL`
 - `UPSTASH_REDIS_REST_TOKEN`
 
@@ -72,9 +76,10 @@ Use sempre a URL publica definitiva do app.
 Exemplo:
 
 ```text
-https://vimens.app/api/cron/recover-runs
-https://vimens.app/api/cron/health-check
-https://vimens.app/api/cron/alerts
+https://www.vimens.com.br/api/cron/recover-runs
+https://www.vimens.com.br/api/cron/health-check
+https://www.vimens.com.br/api/cron/alerts
+https://www.vimens.com.br/api/cron/system-report
 ```
 
 Nao aponte para:
@@ -87,13 +92,14 @@ A verificacao usa a URL do request. Se o schedule chamar uma URL diferente da UR
 
 ## Schedules que precisam existir
 
-Crie estes 3 schedules no QStash:
+Crie estes 4 schedules no QStash:
 
 | Endpoint | Metodo | Cron | Objetivo |
 | --- | --- | --- | --- |
 | `/api/cron/recover-runs` | `GET` | `*/5 * * * *` | Recuperar runs travadas |
 | `/api/cron/health-check` | `GET` | `*/10 * * * *` | Verificar Supabase e Redis |
 | `/api/cron/alerts` | `GET` | `*/30 * * * *` | Consolidar alertas operacionais |
+| `/api/cron/system-report` | `GET` | `0 11 * * *` | Enviar relatorio diario de saude pelo Telegram |
 
 Observacoes:
 
@@ -114,7 +120,7 @@ Para cada endpoint:
 6. Nao envie body.
 7. Salve o schedule.
 
-Repita para os 3 endpoints.
+Repita para os 4 endpoints.
 
 Se o dashboard pedir headers opcionais, nao e necessario adicionar `Authorization`, porque a autenticacao agora e feita pela assinatura do QStash.
 
@@ -126,7 +132,7 @@ Exemplo para `recover-runs`:
 
 ```bash
 curl --request POST \
-  --url "https://qstash.upstash.io/v2/schedules/https://vimens.app/api/cron/recover-runs" \
+  --url "https://qstash.upstash.io/v2/schedules/https://www.vimens.com.br/api/cron/recover-runs" \
   --header "Authorization: Bearer <QSTASH_TOKEN>" \
   --header "Upstash-Cron: */5 * * * *" \
   --header "Upstash-Method: GET"
@@ -136,7 +142,7 @@ Exemplo para `health-check`:
 
 ```bash
 curl --request POST \
-  --url "https://qstash.upstash.io/v2/schedules/https://vimens.app/api/cron/health-check" \
+  --url "https://qstash.upstash.io/v2/schedules/https://www.vimens.com.br/api/cron/health-check" \
   --header "Authorization: Bearer <QSTASH_TOKEN>" \
   --header "Upstash-Cron: */10 * * * *" \
   --header "Upstash-Method: GET"
@@ -146,9 +152,19 @@ Exemplo para `alerts`:
 
 ```bash
 curl --request POST \
-  --url "https://qstash.upstash.io/v2/schedules/https://vimens.app/api/cron/alerts" \
+  --url "https://qstash.upstash.io/v2/schedules/https://www.vimens.com.br/api/cron/alerts" \
   --header "Authorization: Bearer <QSTASH_TOKEN>" \
   --header "Upstash-Cron: */30 * * * *" \
+  --header "Upstash-Method: GET"
+```
+
+Exemplo para `system-report`:
+
+```bash
+curl --request POST \
+  --url "https://qstash.upstash.io/v2/schedules/https://www.vimens.com.br/api/cron/system-report" \
+  --header "Authorization: Bearer <QSTASH_TOKEN>" \
+  --header "Upstash-Cron: 0 11 * * *" \
   --header "Upstash-Method: GET"
 ```
 
@@ -159,7 +175,7 @@ Para evitar quebrar producao:
 1. Faça deploy do codigo novo com suporte a QStash.
 2. Confirme que `QSTASH_CURRENT_SIGNING_KEY` e `QSTASH_NEXT_SIGNING_KEY` estao configuradas.
 3. Mantenha `CRON_SECRET` no ambiente nessa etapa.
-4. Crie os 3 schedules no QStash.
+4. Crie os 4 schedules no QStash.
 5. Espere a primeira execucao automatica de cada um.
 6. Valide logs e respostas.
 7. Quando tudo estiver verde, remova `CRON_SECRET`.
@@ -176,11 +192,12 @@ Valide estes pontos no deploy:
 1. `recover-runs` responde `200` em execucao automatica do QStash.
 2. `health-check` responde `200` quando Supabase e Redis estao saudaveis.
 3. `alerts` responde `200`, mesmo quando nao houver alertas.
-4. Nenhum dos 3 endpoints retorna `401`.
-5. Nenhum dos 3 endpoints retorna `403`.
-6. Os logs nao mostram `Invalid QStash signature`.
-7. O `health-check` continua reportando Redis e Supabase corretamente.
-8. O `recover-runs` continua conseguindo chamar `/api/runs/process`.
+4. `system-report` responde `200`; no JSON, `delivered=true` confirma envio ao Telegram.
+5. Nenhum dos 4 endpoints retorna `401`.
+6. Nenhum dos 4 endpoints retorna `403`.
+7. Os logs nao mostram `Invalid QStash signature`.
+8. O `health-check` continua reportando Redis e Supabase corretamente.
+9. O `recover-runs` continua conseguindo chamar `/api/runs/process`.
 
 ## Como testar sem esperar a janela do cron
 
@@ -216,6 +233,12 @@ Nao use `curl` direto no endpoint publico para validar sucesso funcional, porque
 
 - faltou `RUNS_PROCESS_INTERNAL_SECRET`
 
+`system-report` com `delivered=false`
+
+- o endpoint autenticou e gerou o relatorio, mas o envio ao Telegram falhou
+- confira `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` e a resposta `telegram.error`
+- QStash deve receber `200`; corrija a entrega pelo erro reportado no JSON/logs
+
 ## Rollback
 
 Se algo der errado no cutover:
@@ -230,7 +253,8 @@ Como o `vercel.json` foi removido do repositorio, rollback para Vercel Cron depe
 
 Quando estiver tudo certo em producao:
 
-- os 3 schedules existem no QStash
+- os 4 schedules existem no QStash
+- o schedule de relatorio diario existe no QStash
 - todos usam `GET`
 - todos apontam para a URL publica canonica
 - `QSTASH_CURRENT_SIGNING_KEY` e `QSTASH_NEXT_SIGNING_KEY` estao configuradas

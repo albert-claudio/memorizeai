@@ -81,7 +81,7 @@ export function isBetaSubscription(row: {
 }
 
 function getInviteSecret(): string {
-  const secret = process.env.BETA_INVITE_CODE_SECRET || process.env.RUNS_PROCESS_INTERNAL_SECRET;
+  const secret = process.env.BETA_INVITE_CODE_SECRET;
   if (!secret || secret.length < 24) {
     throw new Error('BETA_INVITE_CODE_SECRET must be configured with at least 24 characters.');
   }

@@ -68,10 +68,8 @@ export function useSimuladoSession(simuladoId: string, userId: string | undefine
     
     questoes.forEach(q => {
       const resposta = respostas.get(q.id);
-      if (resposta) {
-        if (resposta === q.resposta_correta) acertos++;
-        else erros++;
-      }
+      if (resposta === q.resposta_correta) acertos++;
+      else erros++;
     });
 
     try {

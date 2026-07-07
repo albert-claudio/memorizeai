@@ -351,7 +351,7 @@ export function SessionSummary({ results, deckId, userId }: SessionSummaryProps)
         </section>
 
         <section style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-          <Link href="/dashboard/desempenho" style={{ textDecoration: 'none' }}>
+          <Link href="/dashboard/performance" style={{ textDecoration: 'none' }}>
             <button style={{
               padding: '16px 22px',
               background: 'linear-gradient(135deg, #6366F1 0%, #7C3AED 100%)',

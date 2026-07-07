@@ -8,6 +8,7 @@ export interface AITextRequest {
   user: string;
   promptCacheKey?: string;
   maxOutputTokens?: number;
+  timeoutMs?: number;
 }
 
 export interface AITextResult {

@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { track } from '@/lib/analytics/tracker';
+import { getAppUrl } from '@/lib/url';
 
 // ============================================================================
 // ICONS
@@ -228,6 +229,7 @@ export default function CadastroPage() {
         email,
         password,
         options: {
+          emailRedirectTo: getAppUrl('/auth/callback?type=signup'),
           data: {
             full_name: name,
             terms_accepted_at: new Date().toISOString(),
@@ -262,7 +264,7 @@ export default function CadastroPage() {
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
-        redirectTo: `${window.location.origin}/auth/callback`,
+        redirectTo: getAppUrl('/auth/callback'),
       },
     });
     if (error) {

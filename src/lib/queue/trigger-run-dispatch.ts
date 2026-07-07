@@ -11,12 +11,12 @@ export function triggerRunDispatch(runId: string): void {
   if (!secret) return;
 
   const baseUrl = getBaseUrl();
-  fetch(`${baseUrl}/api/runs/process`, {
+  fetch(`${baseUrl}/api/cron/process-queue`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'x-internal-secret': secret,
     },
-    body: JSON.stringify({ runId }),
+    body: JSON.stringify({ reason: 'run-created', runId }),
   }).catch(() => {});
 }

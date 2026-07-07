@@ -16,6 +16,8 @@ interface SubscriptionStatus {
   periodEnd: number | null;
   cancelAtPeriodEnd: boolean;
   isActive: boolean;
+  isTrial?: boolean;
+  isBeta?: boolean;
 }
 
 interface BannerConfig {
@@ -51,8 +53,22 @@ function formatDate(ts: number | null): string {
   return new Date(ts).toLocaleDateString('pt-BR');
 }
 
-function getBannerConfig(sub: SubscriptionStatus): BannerConfig | null {
+export function getBillingBannerConfig(sub: SubscriptionStatus): BannerConfig | null {
   const dateLabel = formatDate(sub.periodEnd);
+
+  if (sub.isTrial && sub.isActive) {
+    return {
+      color: 'blue',
+      icon: '*',
+      message: sub.periodEnd
+        ? `Seu teste gratis esta ativo ate ${dateLabel}.`
+        : 'Seu teste gratis esta ativo.',
+      action: {
+        label: 'Assinar Pro',
+        href: '/upgrade',
+      },
+    };
+  }
 
   // Past due — payment failed but still has access
   if (sub.status === 'past_due') {
@@ -142,7 +158,7 @@ export function BillingBanner({ subscription: externalSub }: BillingBannerProps)
 
   if (loading || !sub) return null;
 
-  const config = getBannerConfig(sub);
+  const config = getBillingBannerConfig(sub);
   if (!config) return null;
 
   const colors = COLORS[config.color];

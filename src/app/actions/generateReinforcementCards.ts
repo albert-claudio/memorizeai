@@ -2,6 +2,8 @@
 
 import Groq from 'groq-sdk';
 import { createClient } from '@/lib/supabase/server';
+import { getEffectiveProAccess } from '@/lib/billing/effective-pro-access';
+import { authorizeDeckCreation } from '@/lib/billing/tier-limits';
 import { getStudyGoalProfile, buildReinforcementSystemPrompt } from '@/lib/study-goal-profiles';
 import { getStudyGoal } from '@/lib/study-goal/get-study-goal';
 
@@ -34,6 +36,34 @@ export async function generateReinforcementCards(
   
   if (wrongCards.length === 0) {
     return { success: false, cardsCreated: 0, error: 'Nenhum card para reforço' };
+  }
+
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+
+  if (!user) {
+    return { success: false, cardsCreated: 0, error: 'Usuário não autenticado' };
+  }
+
+  const isPro = await getEffectiveProAccess(supabase, user.id);
+  if (!isPro) {
+    return { success: false, cardsCreated: 0, error: 'Recurso exclusivo para assinantes Pro.' };
+  }
+
+  const { data: originalDeck, error: deckError } = await supabase
+    .from('decks')
+    .select('id')
+    .eq('id', originalDeckId)
+    .eq('user_id', user.id)
+    .single();
+
+  if (deckError || !originalDeck) {
+    return { success: false, cardsCreated: 0, error: 'Deck não encontrado ou acesso negado' };
+  }
+
+  const deckCapacity = await authorizeDeckCreation(supabase, user.id);
+  if (!deckCapacity.allowed) {
+    return { success: false, cardsCreated: 0, error: deckCapacity.reason };
   }
 
   // Load study goal profile for persona

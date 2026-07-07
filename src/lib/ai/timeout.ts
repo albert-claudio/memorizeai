@@ -8,6 +8,14 @@
  */
 
 export const AI_TIMEOUT_MS = 60_000; // 60 seconds — adjust per SLO
+export const QUESTOES_AI_TIMEOUT_MS = parseInt(process.env.QUESTOES_AI_TIMEOUT_MS || '120000', 10);
+
+export function getAITimeoutForObjective(objective: string): number {
+  if (objective === 'questoes_banca' || objective === 'exercicios_aplicados') {
+    return QUESTOES_AI_TIMEOUT_MS;
+  }
+  return AI_TIMEOUT_MS;
+}
 
 export async function fetchWithTimeout(
   url: string,

@@ -6,45 +6,24 @@ import { useRouter, useParams } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { useSimuladoResults } from '@/features/simulado/hooks/useSimuladoResults';
 import type { RespostaComQuestao } from '@/features/simulado/hooks/useSimuladoResults';
-import { ScoreOverview, ResultList, ErrorStats } from '@/features/simulado/components/Results';
+import { ScoreOverview, ResultList, ErrorStats, ResultReveal, StudyRecommendations } from '@/features/simulado/components/Results';
+import { inferErrorType, inferTopic } from '@/features/simulado/utils/resultAnalysis';
 import { Icons } from '@/features/deck/components/Icons';
 
-function normalize(value: string) {
-  return value
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase();
-}
-
-function inferTopic(row: RespostaComQuestao) {
-  const text = normalize(`${row.questao.enunciado} ${row.questao.comentario || ''} ${row.questao.citation_excerpt || ''}`);
-  const topics = [
-    { label: 'Prazos e requisitos', keys: ['prazo', 'prescricao', 'decadencia', 'requisito', 'condicao'] },
-    { label: 'Competencia e legitimidade', keys: ['competencia', 'competente', 'legitimidade', 'legitimado'] },
-    { label: 'Excecoes e pegadinhas', keys: ['excecao', 'salvo', 'vedado', 'exceto', 'ressalvado'] },
-    { label: 'Efeitos e consequencias', keys: ['efeito', 'consequencia', 'nulidade', 'validade', 'responsabilidade'] },
-    { label: 'Conceitos centrais', keys: ['conceito', 'principio', 'definicao', 'natureza', 'classificacao'] },
-  ];
-
-  return topics.find(topic => topic.keys.some(key => text.includes(key)))?.label || 'Tema do material';
-}
-
-function inferErrorType(row: RespostaComQuestao) {
-  if (!row.resposta_usuario) return 'Questao deixada em branco';
-
-  const text = normalize(`${row.questao.enunciado} ${row.questao.comentario || ''}`);
-  if (text.includes('prazo') || text.includes('art.') || text.includes('lei')) return 'Erro de literalidade';
-  if (text.includes('caso') || text.includes('situacao') || text.includes('hipotet')) return 'Erro de aplicacao';
-  if (text.includes('excecao') || text.includes('salvo') || text.includes('exceto')) return 'Confusao entre regra e excecao';
-  if (text.includes('competencia') || text.includes('legitim')) return 'Confusao de competencia ou legitimidade';
-  return 'Lacuna conceitual';
-}
-
-function SimuladoDiagnosis({ respostas, onTrainAgain }: { respostas: RespostaComQuestao[]; onTrainAgain: () => void }) {
+function SimuladoDiagnosis({
+  acertos,
+  totalQuestoes,
+  respostas,
+  onTrainAgain,
+}: {
+  acertos: number;
+  totalQuestoes: number;
+  respostas: RespostaComQuestao[];
+  onTrainAgain: () => void;
+}) {
   const wrongRows = respostas.filter(row => row.correta === false || row.resposta_usuario === null);
-  const correctRows = respostas.filter(row => row.correta === true);
-  const total = respostas.length || 1;
-  const accuracy = Math.round((correctRows.length / total) * 100);
+  const reviewTotal = Math.max(0, totalQuestoes - acertos);
+  const accuracy = totalQuestoes > 0 ? Math.round((acertos / totalQuestoes) * 100) : 0;
 
   const topicCounts = new Map<string, number>();
   const errorCounts = new Map<string, number>();
@@ -58,9 +37,11 @@ function SimuladoDiagnosis({ respostas, onTrainAgain }: { respostas: RespostaCom
 
   const topTopic = [...topicCounts.entries()].sort((a, b) => b[1] - a[1])[0];
   const topError = [...errorCounts.entries()].sort((a, b) => b[1] - a[1])[0];
-  const nextAction = wrongRows.length === 0
+  const hasErrors = reviewTotal > 0;
+  const focusLabel = topTopic?.[0] || 'pontos errados do simulado';
+  const nextAction = !hasErrors
     ? 'Aumente a dificuldade ou gere um novo simulado para validar dominio.'
-    : `Revise ${topTopic?.[0] || 'os pontos errados'} e refaca um simulado curto com 10 questoes.`;
+    : `Revise ${focusLabel} e refaca um simulado curto com 10 questoes.`;
 
   return (
     <section style={{
@@ -76,10 +57,10 @@ function SimuladoDiagnosis({ respostas, onTrainAgain }: { respostas: RespostaCom
             Diagnostico de prova
           </p>
           <h2 style={{ fontSize: 22, fontWeight: 800, color: '#f4f4f5', marginBottom: 8 }}>
-            {wrongRows.length === 0 ? 'Treino dominado' : `Seu maior gargalo: ${topTopic?.[0] || 'revisao do material'}`}
+            {!hasErrors ? 'Treino dominado' : `Seu maior gargalo: ${focusLabel}`}
           </h2>
           <p style={{ fontSize: 14, color: '#a1a1aa', lineHeight: 1.55 }}>
-            Acerto de {accuracy}%. {topError ? `Padrao principal de erro: ${topError[0]}.` : 'Sem erro relevante neste simulado.'}
+            Acerto de {accuracy}%. {topError ? `Padrao principal de erro: ${topError[0]}.` : hasErrors ? `${reviewTotal} questoes precisam de revisao.` : 'Sem erro relevante neste simulado.'}
           </p>
         </div>
         <button
@@ -102,11 +83,11 @@ function SimuladoDiagnosis({ respostas, onTrainAgain }: { respostas: RespostaCom
       <div style={{ marginTop: 18, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
         <div style={{ padding: 14, borderRadius: 14, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)' }}>
           <div style={{ fontSize: 12, color: '#71717a', marginBottom: 6 }}>Onde focar</div>
-          <div style={{ fontSize: 15, fontWeight: 800, color: '#f4f4f5' }}>{topTopic?.[0] || 'Manter ritmo'}</div>
+          <div style={{ fontSize: 15, fontWeight: 800, color: '#f4f4f5' }}>{hasErrors ? focusLabel : 'Manter ritmo'}</div>
         </div>
         <div style={{ padding: 14, borderRadius: 14, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)' }}>
           <div style={{ fontSize: 12, color: '#71717a', marginBottom: 6 }}>Tipo de erro</div>
-          <div style={{ fontSize: 15, fontWeight: 800, color: '#f4f4f5' }}>{topError?.[0] || 'Nenhum gargalo'}</div>
+          <div style={{ fontSize: 15, fontWeight: 800, color: '#f4f4f5' }}>{topError?.[0] || (hasErrors ? 'Revisao pelo gabarito' : 'Nenhum gargalo')}</div>
         </div>
         <div style={{ padding: 14, borderRadius: 14, background: 'rgba(34,197,94,0.07)', border: '1px solid rgba(34,197,94,0.18)' }}>
           <div style={{ fontSize: 12, color: '#86efac', marginBottom: 6 }}>Proxima acao</div>
@@ -214,9 +195,24 @@ export default function ResultadoPage() {
           total={simulado.total_questoes} 
         />
 
+        <ResultReveal
+          acertos={simulado.acertos}
+          total={simulado.total_questoes}
+          respostas={respostas}
+        />
+
         <SimuladoDiagnosis
+          acertos={simulado.acertos}
+          totalQuestoes={simulado.total_questoes}
           respostas={respostas}
           onTrainAgain={() => router.push('/dashboard/runs')}
+        />
+
+        <StudyRecommendations
+          simuladoId={simuladoId}
+          acertos={simulado.acertos}
+          totalQuestoes={simulado.total_questoes}
+          respostas={respostas}
         />
 
         <ErrorStats respostas={respostas} />

@@ -71,8 +71,8 @@ export default function PrivacidadePage() {
               Esta Política descreve como a plataforma Vimens trata dados pessoais de usuários,
               visitantes e clientes. Para assuntos de
               privacidade e exercício de direitos, o canal oficial de contato é{' '}
-              <a href="mailto:suporte@vimens.app" style={{ color: 'var(--accent)' }}>
-                suporte@vimens.app
+              <a href="mailto:suporte@vimens.com.br" style={{ color: 'var(--accent)' }}>
+                suporte@vimens.com.br
               </a>
               .
             </p>
@@ -186,8 +186,8 @@ export default function PrivacidadePage() {
             </ul>
             <p style={{ ...paragraphStyle, marginTop: 12 }}>
               Para exercer esses direitos, envie sua solicitação para{' '}
-              <a href="mailto:suporte@vimens.app" style={{ color: 'var(--accent)' }}>
-                suporte@vimens.app
+              <a href="mailto:suporte@vimens.com.br" style={{ color: 'var(--accent)' }}>
+                suporte@vimens.com.br
               </a>
               . Poderemos solicitar informações adicionais para confirmar sua identidade e a extensão do
               pedido.
@@ -217,8 +217,8 @@ export default function PrivacidadePage() {
             <p style={paragraphStyle}>
               Dúvidas sobre privacidade, proteção de dados ou exercício de direitos podem ser encaminhadas
               para{' '}
-              <a href="mailto:suporte@vimens.app" style={{ color: 'var(--accent)' }}>
-                suporte@vimens.app
+              <a href="mailto:suporte@vimens.com.br" style={{ color: 'var(--accent)' }}>
+                suporte@vimens.com.br
               </a>
               .
             </p>

@@ -72,6 +72,7 @@ interface SubscriptionStatus {
   cancelAtPeriodEnd: boolean;
   isActive: boolean;
   isBeta?: boolean;
+  isTrial?: boolean;
   refundEligibleUntil: number | null;
   refundEligible: boolean;
 }
@@ -313,7 +314,7 @@ export default function SettingsPage() {
     finally { setRefundingPlan(false); }
   }, []);
 
-  const hasPaidSub = Boolean(subscription && !subscription.isBeta && subscription.status !== 'free' && subscription.tier !== 'free');
+  const hasPaidSub = Boolean(subscription && !subscription.isBeta && !subscription.isTrial && subscription.status !== 'free' && subscription.tier !== 'free');
   const cycleEndLabel = formatDateBR(subscription?.periodEnd ?? null);
   const cycleStartLabel = formatDateBR(subscription?.periodStart ?? null);
   const canRefund = Boolean(hasPaidSub && subscription?.refundEligible);
@@ -634,8 +635,12 @@ export default function SettingsPage() {
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#a1a1aa', fontSize: 13 }}>
                   <Icons.Loader /> Carregando dados da assinatura...
                 </div>
+              ) : subscription?.isTrial ? (
+                <p style={{ fontSize: 13, color: '#a1a1aa', margin: 0 }}>
+                  Teste gratis ativo. Recursos Pro liberados ate {cycleEndLabel}.
+                </p>
               ) : subscription?.isBeta ? (
-                <p style={{ fontSize: 13, color: '#a1a1aa', margin: 0 }}>Acesso beta ativo. Recursos Pro liberados pela lista beta.</p>
+                <p style={{ fontSize: 13, color: '#a1a1aa', margin: 0 }}>Acesso legado ativo. Recursos Pro liberados temporariamente.</p>
               ) : !hasPaidSub ? (
                 <p style={{ fontSize: 13, color: '#a1a1aa', margin: 0 }}>Nenhum plano ativo encontrado.</p>
               ) : (
