@@ -30,10 +30,17 @@ describe('billing E2E deployment gate', () => {
     expect(isBillingIntegrationRouteEnabled('BILLING_E2E_ENABLED')).toBe(true);
   });
 
-  it('stays disabled on production deployments', () => {
+  it('allows explicit APP_ENV=staging for custom-domain staging on Vercel', () => {
     process.env.NODE_ENV = 'production';
     process.env.VERCEL_ENV = 'production';
     process.env.APP_ENV = 'staging';
+
+    expect(isBillingIntegrationRouteEnabled('BILLING_E2E_ENABLED')).toBe(true);
+  });
+
+  it('stays disabled on production deployments without explicit staging marker', () => {
+    process.env.NODE_ENV = 'production';
+    process.env.VERCEL_ENV = 'production';
 
     expect(isBillingIntegrationRouteEnabled('BILLING_E2E_ENABLED')).toBe(false);
   });

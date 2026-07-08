@@ -3,22 +3,27 @@ import type { NextRequest } from 'next/server';
 
 type BillingE2EFlag = 'BILLING_E2E_ENABLED' | 'BILLING_CHECKOUT_E2E_ENABLED';
 
-function getDeploymentEnvironment(): string {
-  return (
-    process.env.VERCEL_ENV ||
-    process.env.APP_ENV ||
-    process.env.NODE_ENV ||
-    ''
-  ).toLowerCase();
+function isNonProductionBillingE2EEnvironment(): boolean {
+  const appEnv = (process.env.APP_ENV || '').toLowerCase();
+  const vercelEnv = (process.env.VERCEL_ENV || '').toLowerCase();
+  const nodeEnv = (process.env.NODE_ENV || '').toLowerCase();
+
+  if (appEnv === 'staging' || appEnv === 'test') {
+    return true;
+  }
+
+  if (vercelEnv) {
+    return vercelEnv !== 'production';
+  }
+
+  return nodeEnv !== 'production';
 }
 
 export function isBillingIntegrationRouteEnabled(flagName: BillingE2EFlag): boolean {
-  const deploymentEnvironment = getDeploymentEnvironment();
-
   return (
     process.env[flagName] === 'true' &&
     Boolean(process.env.BILLING_E2E_SECRET) &&
-    deploymentEnvironment !== 'production'
+    isNonProductionBillingE2EEnvironment()
   );
 }
 
