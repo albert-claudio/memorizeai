@@ -1,5 +1,6 @@
 import { Ratelimit } from "@upstash/ratelimit";
 import { Redis } from "@upstash/redis";
+import { captureWarning } from '@/lib/sentry';
 
 // ============================================================
 // RATE LIMITING CONFIGURATION
@@ -29,6 +30,12 @@ if (!hasRedis) {
     `it does NOT protect against distributed attacks or work across multiple instances/pods. ` +
     `Configure Redis for production use.`
   );
+  if (process.env.NODE_ENV === 'production') {
+    captureWarning('Redis rate limiting not configured in production', {
+      route: 'rate-limiter',
+      tags: { severity: 'security', component: 'rate-limiter' },
+    });
+  }
 }
 
 // ============================================================
@@ -98,10 +105,16 @@ function memoryRateLimit(
 
 // Limits configuration (shared between Redis and memory)
 const LIMITS = {
-  auth:  { max: 5,  windowMs: 15 * 60_000,  windowLabel: "15 m" },
-  ai:    { max: 10, windowMs: 60_000,  windowLabel: "1 m" },
-  api:   { max: 60, windowMs: 60_000,  windowLabel: "1 m" },
+  auth:  { max: 20,  windowMs: 5 * 60_000, windowLabel: "5 m" },
+  ai:    { max: 20,  windowMs: 60_000,     windowLabel: "1 m" },
+  api:   { max: 120, windowMs: 60_000,     windowLabel: "1 m" },
+  read:  { max: 240, windowMs: 60_000,     windowLabel: "1 m" },
 } as const;
+
+const REDIS_RATE_LIMIT_TIMEOUT_MS = parseInt(
+  process.env.RATE_LIMIT_REDIS_TIMEOUT_MS || '1500',
+  10,
+);
 
 /**
  * Rate limiter para rotas de autenticação (login, cadastro)
@@ -145,27 +158,55 @@ export const apiLimiter = redis
     })
   : null;
 
+/**
+ * Rate limiter para leituras e polling frequentes.
+ * Mais folgado para nÃ£o quebrar UX de status, notificaÃ§Ãµes e dashboards.
+ */
+export const readLimiter = redis
+  ? new Ratelimit({
+      redis,
+      limiter: Ratelimit.slidingWindow(LIMITS.read.max, LIMITS.read.windowLabel),
+      prefix: "ratelimit:read",
+      analytics: true,
+    })
+  : null;
+
 // ============================================================
 // HELPER FUNCTIONS
 // ============================================================
 
-type LimitTier = 'auth' | 'ai' | 'api';
+type LimitTier = 'auth' | 'ai' | 'api' | 'read';
 
 /**
  * Determina qual rate limit tier usar baseado na rota
  */
-function getRouteLimitTier(pathname: string): LimitTier | null {
+function getRouteLimitTier(pathname: string, method = 'GET'): LimitTier | null {
+  const normalizedMethod = method.toUpperCase();
   // Rotas de autenticação (mais restritivas)
-  if (pathname === "/login" || pathname === "/cadastro" || pathname === "/api/auth/login") {
+  if (pathname === "/api/auth/login" && normalizedMethod === 'POST') {
     return 'auth';
+  }
+
+  if (
+    normalizedMethod === 'GET' &&
+    (
+      pathname === "/api/runs" ||
+      pathname.startsWith("/api/notifications/") ||
+      pathname.startsWith("/api/dashboard/")
+    )
+  ) {
+    return 'read';
   }
 
   // APIs de geração com IA (restritivas)
   if (
-    pathname.startsWith("/api/runs") ||
+    pathname === "/api/runs/process" ||
+    (pathname === "/api/runs" && normalizedMethod !== 'GET') ||
     pathname.startsWith("/api/process-source") ||
     pathname.startsWith("/api/extract-pdf") ||
-    pathname.startsWith("/api/extract-document")
+    pathname.startsWith("/api/extract-document") ||
+    pathname.startsWith("/api/simulado/reinforcement-flashcards") ||
+    pathname.startsWith("/api/simulado/study-recommendations")
   ) {
     return 'ai';
   }
@@ -184,14 +225,15 @@ function getRouteLimitTier(pathname: string): LimitTier | null {
  * Returns the Redis-backed Ratelimit if available, otherwise null.
  * Use applyRateLimit() instead for automatic fallback to in-memory.
  */
-export function getRateLimiter(pathname: string): Ratelimit | null {
-  const tier = getRouteLimitTier(pathname);
+export function getRateLimiter(pathname: string, method = 'GET'): Ratelimit | null {
+  const tier = getRouteLimitTier(pathname, method);
   if (!tier) return null;
 
   const limiters: Record<LimitTier, Ratelimit | null> = {
     auth: authLimiter,
     ai: aiLimiter,
     api: apiLimiter,
+    read: readLimiter,
   };
 
   return limiters[tier];
@@ -206,8 +248,9 @@ export function getRateLimiter(pathname: string): Ratelimit | null {
 export async function applyRateLimit(
   pathname: string,
   identifier: string,
+  method = 'GET',
 ): Promise<{ success: boolean; limit: number; remaining: number; reset: number; mode: 'redis' | 'memory' } | null> {
-  const tier = getRouteLimitTier(pathname);
+  const tier = getRouteLimitTier(pathname, method);
   if (!tier) return null;
 
   const applyMemoryFallback = () => {
@@ -218,10 +261,10 @@ export async function applyRateLimit(
   };
 
   // Prefer Redis-backed limiter
-  const redisLimiter = getRateLimiter(pathname);
+  const redisLimiter = getRateLimiter(pathname, method);
   if (redisLimiter) {
     try {
-      const result = await redisLimiter.limit(identifier);
+      const result = await withRedisTimeout(redisLimiter.limit(identifier));
       return { ...result, mode: 'redis' as const };
     } catch (error) {
       console.warn(
@@ -233,6 +276,66 @@ export async function applyRateLimit(
   }
 
   return applyMemoryFallback();
+}
+
+export async function applyCustomRateLimit({
+  prefix,
+  identifier,
+  maxRequests,
+  windowMs,
+  windowLabel,
+}: {
+  prefix: string;
+  identifier: string;
+  maxRequests: number;
+  windowMs: number;
+  windowLabel: Parameters<typeof Ratelimit.slidingWindow>[1];
+}): Promise<{ success: boolean; limit: number; remaining: number; reset: number; mode: 'redis' | 'memory' }> {
+  const safePrefix = prefix.replace(/[^a-z0-9:_-]/gi, '').slice(0, 80) || 'custom';
+  const safeIdentifier = identifier.slice(0, 180);
+
+  const applyMemoryFallback = () => {
+    const result = memoryRateLimit(`${safePrefix}:${safeIdentifier}`, maxRequests, windowMs);
+    return { ...result, mode: 'memory' as const };
+  };
+
+  if (redis) {
+    try {
+      const limiter = new Ratelimit({
+        redis,
+        limiter: Ratelimit.slidingWindow(maxRequests, windowLabel),
+        prefix: `ratelimit:${safePrefix}`,
+        analytics: true,
+      });
+      const result = await withRedisTimeout(limiter.limit(safeIdentifier));
+      return { ...result, mode: 'redis' as const };
+    } catch (error) {
+      console.warn(
+        '[Rate Limiter] Redis custom limit failed. Falling back to in-memory rate limiting for this request.',
+        error,
+      );
+      return applyMemoryFallback();
+    }
+  }
+
+  return applyMemoryFallback();
+}
+
+async function withRedisTimeout<T>(operation: Promise<T>): Promise<T> {
+  let timeout: NodeJS.Timeout | null = null;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => {
+          reject(new Error(`Redis rate limit timed out after ${REDIS_RATE_LIMIT_TIMEOUT_MS}ms`));
+        }, REDIS_RATE_LIMIT_TIMEOUT_MS);
+        timeout.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
 }
 
 /**

@@ -49,6 +49,11 @@ const POLICIES: Record<string, PromptPolicy> = {
     maxCharsTotal: 60000,
     maxCharsPerChunk: 4000,
   },
+  'questoes_banca:openai': {
+    maxChunks: parseInt(process.env.QUESTOES_OPENAI_MAX_CHUNKS || '6', 10),
+    maxCharsTotal: parseInt(process.env.QUESTOES_OPENAI_MAX_CHARS_TOTAL || '18000', 10),
+    maxCharsPerChunk: parseInt(process.env.QUESTOES_OPENAI_MAX_CHARS_PER_CHUNK || '2200', 10),
+  },
 
   // Exercícios aplicados
   'exercicios_aplicados:groq': {
@@ -60,6 +65,11 @@ const POLICIES: Record<string, PromptPolicy> = {
     maxChunks: 8,
     maxCharsTotal: 40000,
     maxCharsPerChunk: 3000,
+  },
+  'exercicios_aplicados:openai': {
+    maxChunks: parseInt(process.env.EXERCICIOS_OPENAI_MAX_CHUNKS || '5', 10),
+    maxCharsTotal: parseInt(process.env.EXERCICIOS_OPENAI_MAX_CHARS_TOTAL || '16000', 10),
+    maxCharsPerChunk: parseInt(process.env.EXERCICIOS_OPENAI_MAX_CHARS_PER_CHUNK || '2000', 10),
   },
 };
 
@@ -91,6 +101,11 @@ const REDUCED_POLICIES: Record<string, PromptPolicy> = {
     maxCharsTotal: 40000,
     maxCharsPerChunk: 3000,
   },
+  'questoes_banca:openai': {
+    maxChunks: parseInt(process.env.QUESTOES_OPENAI_REDUCED_MAX_CHUNKS || '4', 10),
+    maxCharsTotal: parseInt(process.env.QUESTOES_OPENAI_REDUCED_MAX_CHARS_TOTAL || '12000', 10),
+    maxCharsPerChunk: parseInt(process.env.QUESTOES_OPENAI_REDUCED_MAX_CHARS_PER_CHUNK || '1600', 10),
+  },
   'exercicios_aplicados:groq': {
     maxChunks: 4,
     maxCharsTotal: 12000,
@@ -100,6 +115,11 @@ const REDUCED_POLICIES: Record<string, PromptPolicy> = {
     maxChunks: 6,
     maxCharsTotal: 28000,
     maxCharsPerChunk: 2500,
+  },
+  'exercicios_aplicados:openai': {
+    maxChunks: parseInt(process.env.EXERCICIOS_OPENAI_REDUCED_MAX_CHUNKS || '4', 10),
+    maxCharsTotal: parseInt(process.env.EXERCICIOS_OPENAI_REDUCED_MAX_CHARS_TOTAL || '11000', 10),
+    maxCharsPerChunk: parseInt(process.env.EXERCICIOS_OPENAI_REDUCED_MAX_CHARS_PER_CHUNK || '1500', 10),
   },
 };
 

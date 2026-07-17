@@ -1,7 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { hasProAccess, type ProAccessProfile } from '@/lib/billing/pro-access';
-import { hasActiveBetaAccess, isBetaSubscription } from '@/lib/beta/invites';
-import { getSupabaseAdmin } from '@/lib/supabase/admin';
+import { hasActiveFreeTrialAccess, isInternalAccessSubscription } from '@/lib/billing/free-trial';
 
 interface SubscriptionAccessRow {
   status?: string | null;
@@ -10,19 +9,6 @@ interface SubscriptionAccessRow {
   price_id?: string | null;
   stripe_subscription_id?: string | null;
   stripe_customer_id?: string | null;
-}
-
-async function checkBetaAccess(userId: string): Promise<boolean> {
-  if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
-    return false;
-  }
-
-  try {
-    return await hasActiveBetaAccess({ admin: getSupabaseAdmin(), userId });
-  } catch (error) {
-    console.warn('[Effective Pro Access] Unable to check beta access:', error);
-    return false;
-  }
 }
 
 export async function getEffectiveProAccess(
@@ -36,10 +22,19 @@ export async function getEffectiveProAccess(
     .eq('id', userId)
     .maybeSingle();
 
-  const betaAccess = await checkBetaAccess(userId);
-  if (betaAccess) return true;
+  try {
+    if (await hasActiveFreeTrialAccess({ admin: supabase, userId, nowMs })) {
+      return true;
+    }
+  } catch (error) {
+    console.warn('[Effective Pro Access] Unable to check free trial access:', error);
+  }
 
   if (!profile) return false;
+
+  if (hasProAccess(profile as ProAccessProfile, nowMs)) {
+    return true;
+  }
 
   const { data: subscriptions } = await supabase
     .from('subscriptions')
@@ -49,7 +44,7 @@ export async function getEffectiveProAccess(
     .limit(20);
 
   const latestSubscription = ((subscriptions ?? []) as SubscriptionAccessRow[])
-    .find((subscription) => !isBetaSubscription(subscription)) ?? null;
+    .find((subscription) => !isInternalAccessSubscription(subscription)) ?? null;
   if (!latestSubscription) return false;
 
   return hasProAccess({

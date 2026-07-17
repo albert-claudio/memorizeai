@@ -1,33 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { stripe, PRO_PRICE_ID } from '@/lib/billing/stripe';
-import { timingSafeEqual } from 'crypto';
+import {
+  hasValidBillingE2EKey,
+  isBillingIntegrationRouteEnabled,
+} from '@/lib/billing/e2e-gate';
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!,
   { auth: { persistSession: false } }
 );
-
-function isBillingE2EEnabled(): boolean {
-  return process.env.BILLING_E2E_ENABLED === 'true' && process.env.NODE_ENV !== 'production';
-}
-
-function hasValidKey(request: NextRequest): boolean {
-  const expectedKey = process.env.BILLING_E2E_SECRET;
-  const providedKey = request.headers.get('x-billing-e2e-key');
-  if (!expectedKey || !providedKey) {
-    return false;
-  }
-
-  const expectedBuffer = Buffer.from(expectedKey, 'utf8');
-  const providedBuffer = Buffer.from(providedKey, 'utf8');
-  if (expectedBuffer.length !== providedBuffer.length) {
-    return false;
-  }
-
-  return timingSafeEqual(expectedBuffer, providedBuffer);
-}
 
 function toMs(value: unknown): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
@@ -38,11 +21,11 @@ function toMs(value: unknown): number | null {
 
 export async function POST(request: NextRequest) {
   try {
-    if (!isBillingE2EEnabled()) {
+    if (!isBillingIntegrationRouteEnabled('BILLING_E2E_ENABLED')) {
       return NextResponse.json({ error: 'Not found' }, { status: 404 });
     }
 
-    if (!hasValidKey(request)) {
+    if (!hasValidBillingE2EKey(request)) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
@@ -59,7 +42,7 @@ export async function POST(request: NextRequest) {
         ? body.runId.trim()
         : crypto.randomUUID().replace(/-/g, '').slice(0, 16);
 
-    const email = `billing-e2e+${runId}@vimens.app`;
+    const email = `billing-e2e+${runId}@vimens.com.br`;
     const tempPassword = `${crypto.randomUUID()}Aa1!`;
     const now = Date.now();
 
@@ -185,6 +168,7 @@ export async function POST(request: NextRequest) {
       runId,
       userId,
       email,
+      tempPassword,
       stripeCustomerId: customer.id,
       stripeSubscriptionId: subscription.id,
       stripePaymentMethodId: attachedPaymentMethod.id,

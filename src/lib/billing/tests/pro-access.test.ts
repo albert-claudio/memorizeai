@@ -42,6 +42,16 @@ describe('hasProAccess', () => {
     ).toBe(false);
   });
 
+  it('returns true for trialing pro while trial period is still valid', () => {
+    expect(
+      hasProAccess({
+        is_pro: true,
+        subscription_status: 'trialing',
+        subscription_period_end: Date.now() + 60_000,
+      })
+    ).toBe(true);
+  });
+
   it('returns false for active without period end', () => {
     expect(
       hasProAccess({
@@ -63,7 +73,7 @@ describe('hasProAccess', () => {
     ).toBe(false);
   });
 
-  it('returns false when only admin override is enabled', () => {
+  it('returns true when admin override is enabled', () => {
     expect(
       hasProAccess({
         is_pro: false,
@@ -71,6 +81,6 @@ describe('hasProAccess', () => {
         subscription_period_end: null,
         admin_override_pro: true,
       })
-    ).toBe(false);
+    ).toBe(true);
   });
 });

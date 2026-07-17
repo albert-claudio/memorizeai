@@ -1,0 +1,23 @@
+[
+  {
+    "provider": "groq",
+    "runId": "23db1ff7-909e-4e1d-840d-0fbcfd573064",
+    "status": "concluido",
+    "itemsGenerated": 2,
+    "deckId": "9a313424-2265-43e1-a189-ca0114afc322"
+  },
+  {
+    "provider": "gemini",
+    "runId": "af028b18-b899-45c2-919a-fe6ddbc6726b",
+    "status": "concluido",
+    "itemsGenerated": 2,
+    "deckId": "ac3e787e-a479-44c9-abe9-f388cb47ffdf"
+  },
+  {
+    "provider": "openai",
+    "runId": "565825ad-58da-46f0-b778-11bd56589a07",
+    "status": "concluido",
+    "itemsGenerated": 2,
+    "deckId": "cd5bd742-db0c-4a90-a0e5-51f11584acdc"
+  }
+]

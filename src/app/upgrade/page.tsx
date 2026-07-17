@@ -49,6 +49,8 @@ interface SubscriptionStatus {
   periodEnd: number | null;
   cancelAtPeriodEnd: boolean;
   isActive: boolean;
+  isTrial?: boolean;
+  isBeta?: boolean;
 }
 
 interface ProOffer {
@@ -165,7 +167,12 @@ export default function UpgradePage() {
     }
   };
 
-  const hasSubscription = !!subscription && subscription.status !== 'free';
+  const hasSubscription = Boolean(
+    subscription
+    && !subscription.isTrial
+    && !subscription.isBeta
+    && subscription.status !== 'free'
+  );
   const isBusy = checkoutLoading || portalLoading || statusLoading;
 
   const features = [

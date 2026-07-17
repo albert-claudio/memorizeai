@@ -1,10 +1,10 @@
 import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
-import { activateBetaInviteForUser } from '@/lib/beta/invites'
+import { ensureFreeTrialForUser } from '@/lib/billing/free-trial'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 
-async function ensureProfileExists(userId: string, email?: string | null) {
+async function ensureProfileExists(userId: string) {
   const supabase = await createClient();
   const { data: existingProfile } = await supabase
     .from('profiles')
@@ -20,19 +20,16 @@ async function ensureProfileExists(userId: string, email?: string | null) {
       created_at: now,
       updated_at: now,
     });
-    console.log('[Auth] Profile criado para novo usuario:', email);
+    console.log('[Auth] Profile criado para novo usuario:', userId);
   }
 
-  if (email) {
-    try {
-      await activateBetaInviteForUser({
-        admin: getSupabaseAdmin(),
-        userId,
-        email,
-      });
-    } catch (error) {
-      console.error('[Auth] Falha ao sincronizar acesso beta:', error);
-    }
+  try {
+    await ensureFreeTrialForUser({
+      admin: getSupabaseAdmin(),
+      userId,
+    });
+  } catch (error) {
+    console.error('[Auth] Falha ao sincronizar trial gratuito:', error);
   }
 }
 
@@ -54,7 +51,7 @@ export async function GET(request: NextRequest) {
         return NextResponse.redirect(new URL('/redefinir-senha', request.url));
       }
 
-      await ensureProfileExists(data.user.id, data.user.email);
+      await ensureProfileExists(data.user.id);
       return NextResponse.redirect(new URL('/email-confirmado', request.url));
     }
 
@@ -71,7 +68,7 @@ export async function GET(request: NextRequest) {
         return NextResponse.redirect(new URL('/redefinir-senha', request.url));
       }
 
-      await ensureProfileExists(data.user.id, data.user.email);
+      await ensureProfileExists(data.user.id);
       return NextResponse.redirect(new URL('/email-confirmado', request.url));
     }
 

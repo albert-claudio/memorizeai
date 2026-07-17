@@ -1,6 +1,6 @@
 {
   "name": "vimens",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -12,7 +12,16 @@
     "test": "vitest run",
     "test:vitest": "vitest run",
     "test:security": "vitest run src/app/api/tests/user-isolation-pentest.test.ts src/app/api/stripe/tests/billing-e2e.test.ts src/lib/security/tests/webhook-security.test.ts src/lib/security/tests/cron-auth.test.ts",
-    "test:live-integration": "node scripts/ci/live-integration-smoke.mjs"
+    "test:live-integration": "node --env-file=.env scripts/ci/live-integration-smoke.mjs",
+    "test:live-providers": "vitest run src/app/api/tests/live-providers-supabase-validate.test.ts",
+    "test:live-queue-load": "vitest run src/app/api/tests/live-queue-load-validate.test.ts",
+    "eval:oab:calibrate": "node scripts/eval-oab-calibration.mjs",
+    "eval:oab:blind": "node scripts/eval-oab-blind-test-prep.mjs",
+    "eval:oab:blind:score": "node scripts/eval-oab-blind-test-score.mjs",
+    "eval:oab:export": "node scripts/export-oab-generated-questions.mjs",
+    "public-launch:preflight": "node --env-file=.env scripts/ci/staging-preflight.mjs",
+    "stripe:staging:validate": "npm run public-launch:preflight && node --env-file=.env scripts/ci/live-integration-smoke.mjs --billing-staging-validate",
+    "stripe:production:preflight": "node --env-file=.env scripts/ci/production-billing-preflight.mjs"
   },
   "dependencies": {
     "@sentry/nextjs": "^10.46.0",
@@ -21,10 +30,10 @@
     "@upstash/qstash": "^2.10.1",
     "@upstash/ratelimit": "^2.0.7",
     "@upstash/redis": "^1.36.1",
+    "cheerio": "^1.2.0",
     "groq-sdk": "^0.37.0",
-    "mammoth": "^1.11.0",
-    "next": "16.1.6",
-    "officeparser": "^6.0.2",
+    "jszip": "^3.10.1",
+    "next": "16.2.6",
     "pdf2json": "^4.0.0",
     "react": "19.2.1",
     "react-dom": "19.2.1",
@@ -37,10 +46,14 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
-    "eslint-config-next": "16.1.6",
+    "eslint-config-next": "16.2.6",
     "playwright": "^1.58.2",
     "tailwindcss": "^4",
     "typescript": "5.9.3",
     "vitest": "^4.0.16"
+  },
+  "overrides": {
+    "@xmldom/xmldom": "0.8.13",
+    "postcss": "^8.5.10"
   }
 }

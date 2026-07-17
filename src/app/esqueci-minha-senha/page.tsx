@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
+import { getAppUrl } from '@/lib/url';
 
 // ============================================================================
 // ICONS
@@ -113,7 +114,7 @@ export default function EsqueciMinhaSenhaPage() {
       window.localStorage.setItem('auth-flow', 'recovery');
       const supabase = createClient();
       const { error } = await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo: `${window.location.origin}/auth/callback?flow=recovery&next=/redefinir-senha`,
+        redirectTo: getAppUrl('/auth/callback?flow=recovery&next=/redefinir-senha'),
       });
       
       if (error) {

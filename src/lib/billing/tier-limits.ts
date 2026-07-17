@@ -1,5 +1,6 @@
 import { createClient } from '@/lib/supabase/server';
 import { getEffectiveProAccess } from '@/lib/billing/effective-pro-access';
+import type { SupabaseClient } from '@supabase/supabase-js';
 
 // ============================================================================
 // TIER LIMITS CONFIGURATION
@@ -44,6 +45,20 @@ export interface TierLimits {
   weeklyUploadsUsed: number;
   weeklyUploadsMax: number;
   isPro: boolean;
+}
+
+export interface DeckCreationAuthorization {
+  allowed: boolean;
+  reason?: string;
+  currentCount: number;
+  maxCount: number;
+}
+
+export interface CardCreationAuthorization {
+  allowed: boolean;
+  reason?: string;
+  currentCount: number;
+  maxCount: number;
 }
 
 // ============================================================================
@@ -120,6 +135,38 @@ export async function getUserTierLimits(userId: string): Promise<TierLimits> {
  * Check if user can create a new deck
  * Free users: max 3 decks
  */
+export async function authorizeDeckCreation(
+  supabase: SupabaseClient,
+  userId: string,
+): Promise<DeckCreationAuthorization> {
+  const isPro = await getEffectiveProAccess(supabase, userId);
+  const tier: UserTier = isPro ? 'pro' : 'free';
+  const limits = TIER_LIMITS[tier];
+
+  const { count: deckCount } = await supabase
+    .from('decks')
+    .select('id', { count: 'exact', head: true })
+    .eq('user_id', userId)
+    .is('deleted_at', null);
+
+  const currentCount = deckCount || 0;
+
+  if (tier === 'pro') {
+    return { allowed: true, currentCount, maxCount: limits.maxDecks };
+  }
+
+  if (currentCount >= limits.maxDecks) {
+    return {
+      allowed: false,
+      reason: `Limite de ${limits.maxDecks} decks atingido. Faca upgrade para Pro para decks ilimitados.`,
+      currentCount,
+      maxCount: limits.maxDecks,
+    };
+  }
+
+  return { allowed: true, currentCount, maxCount: limits.maxDecks };
+}
+
 export async function canCreateDeck(userId: string): Promise<{ allowed: boolean; reason?: string; currentCount: number; maxCount: number }> {
   const limits = await getUserTierLimits(userId);
 
@@ -143,6 +190,40 @@ export async function canCreateDeck(userId: string): Promise<{ allowed: boolean;
  * Check if user can add a card to a deck
  * Free users: max 50 cards per deck
  */
+export async function authorizeCardCreation(
+  supabase: SupabaseClient,
+  deckId: string,
+  userId: string,
+  cardsToAdd: number = 1,
+): Promise<CardCreationAuthorization> {
+  const isPro = await getEffectiveProAccess(supabase, userId);
+  const tier: UserTier = isPro ? 'pro' : 'free';
+  const limits = TIER_LIMITS[tier];
+
+  const { count: cardCount } = await supabase
+    .from('cards')
+    .select('id', { count: 'exact', head: true })
+    .eq('deck_id', deckId)
+    .is('deleted_at', null);
+
+  const currentCount = cardCount || 0;
+
+  if (tier === 'pro') {
+    return { allowed: true, currentCount, maxCount: limits.maxCardsPerDeck };
+  }
+
+  if (currentCount + Math.max(1, Math.floor(cardsToAdd)) > limits.maxCardsPerDeck) {
+    return {
+      allowed: false,
+      reason: `Limite de ${limits.maxCardsPerDeck} cards por deck atingido. Faca upgrade para Pro para ate 10.000 cards por deck.`,
+      currentCount,
+      maxCount: limits.maxCardsPerDeck,
+    };
+  }
+
+  return { allowed: true, currentCount, maxCount: limits.maxCardsPerDeck };
+}
+
 export async function canAddCardToDeck(deckId: string, userId: string): Promise<{ allowed: boolean; reason?: string; currentCount: number; maxCount: number }> {
   const supabase = await createClient();
   const limits = await getUserTierLimits(userId);

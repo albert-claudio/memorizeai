@@ -21,6 +21,8 @@ export interface Resposta {
   id: string;
   questao_id: string;
   resposta_usuario: string | null;
+  correta?: boolean | null;
+  respondido_em?: number | null;
 }
 
 export interface Simulado {
@@ -145,21 +147,41 @@ export const simuladoService = {
 
   async getRespostasComQuestoes(simuladoId: string): Promise<ValidatedRespostaComQuestao[]> {
     const supabase = createClient();
-    const { data, error } = await supabase
-      .from('simulado_respostas')
-      .select(`
-        *,
-        questao:simulado_questoes(*)
-      `)
-      .eq('simulado_id', simuladoId)
-      .order('questao(numero)', { ascending: true });
+    const [{ data: questoes, error: questoesError }, { data: respostas, error: respostasError }] = await Promise.all([
+      supabase
+        .from('simulado_questoes')
+        .select('*')
+        .eq('simulado_id', simuladoId)
+        .order('numero', { ascending: true }),
+      supabase
+        .from('simulado_respostas')
+        .select('*')
+        .eq('simulado_id', simuladoId),
+    ]);
 
-    if (error) throw error;
-    
-    // Filter out rows where the join failed (questao is null)
-    // After this filter, questao is guaranteed non-null
-    return (data as RespostaComQuestaoDTO[]).filter(
-      (r): r is ValidatedRespostaComQuestao => r.questao !== null
+    if (questoesError) throw questoesError;
+    if (respostasError) throw respostasError;
+
+    const respostasByQuestionId = new Map(
+      ((respostas ?? []) as Resposta[]).map((resposta) => [resposta.questao_id, resposta])
     );
+
+    return ((questoes ?? []) as Questao[]).map((questao): ValidatedRespostaComQuestao => {
+      const resposta = respostasByQuestionId.get(questao.id);
+      const respostaUsuario = resposta?.resposta_usuario ?? null;
+      const correta = respostaUsuario
+        ? resposta?.correta ?? respostaUsuario === questao.resposta_correta
+        : false;
+
+      return {
+        id: resposta?.id ?? `missing-${questao.id}`,
+        simulado_id: simuladoId,
+        questao_id: questao.id,
+        resposta_usuario: respostaUsuario,
+        correta,
+        respondido_em: resposta?.respondido_em ?? null,
+        questao,
+      };
+    });
   }
 };

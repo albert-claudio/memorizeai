@@ -1,0 +1,54 @@
+{
+  "wave1": {
+    "flashcards": 4,
+    "simulados": 1
+  },
+  "wave2": {
+    "flashcards": 4,
+    "simulados": 1
+  },
+  "totalRuns": 10,
+  "totalElapsedMs": 24513,
+  "dispatch": {
+    "cycles": 30,
+    "totalDispatched": 10,
+    "totalSkippedCapacity": 0,
+    "maxActiveBySlot": {
+      "groq:flashcards": 5,
+      "groq:questoes": 0,
+      "gemini:questoes": 2,
+      "gemini:flashcards": 0,
+      "openai:flashcards": 3,
+      "openai:questoes": 0
+    },
+    "lastCycle": {
+      "ok": true,
+      "dispatched": 0,
+      "skipped": 0,
+      "message": "Queue empty"
+    }
+  },
+  "recovery": {
+    "cycles": 2,
+    "recoveredFromProcessing": 0,
+    "recoveredFromStale": 0,
+    "markedFailed": 0
+  },
+  "final": {
+    "pending": 0,
+    "processing": 0,
+    "concluded": 10,
+    "failed": 0,
+    "flashcards": {
+      "pending": 0,
+      "concluded": 8,
+      "failed": 0
+    },
+    "simulados": {
+      "pending": 0,
+      "concluded": 2,
+      "failed": 0
+    }
+  },
+  "sampleFailures": []
+}

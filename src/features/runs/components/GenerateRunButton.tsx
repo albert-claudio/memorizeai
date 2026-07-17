@@ -1,4 +1,3 @@
-import type { MonthlyUsage } from '@/lib/billing/run-entitlement';
 import type { RunObjective, Source } from '@/lib/types';
 import { Icons } from './Icons';
 
@@ -7,7 +6,6 @@ interface GenerateRunButtonProps {
   selectedObjective: RunObjective | null;
   creating: boolean;
   targetCount: number;
-  usage: MonthlyUsage | null;
   onCreateRun: () => void;
   bancaBlocking?: boolean;
   compact?: boolean;
@@ -18,51 +16,24 @@ export function GenerateRunButton({
   selectedObjective,
   creating,
   targetCount,
-  usage,
   onCreateRun,
   bancaBlocking = false,
   compact = false,
 }: GenerateRunButtonProps) {
-  const limitReached = (() => {
-    // Desativado temporariamente: geração ilimitada
-    return false;
-    /* if (!usage || !selectedObjective) return false;
-
-    if (selectedObjective === 'flashcards') {
-      return usage.flashcardsUsed >= usage.flashcardsLimit;
-    }
-
-    return usage.simuladosUsed >= usage.simuladosLimit; */
-  })();
-
-  const canGenerate = !!selectedSource && !!selectedObjective && !creating && !limitReached && !bancaBlocking;
+  const canGenerate = !!selectedSource && !!selectedObjective && !creating && !bancaBlocking;
 
   const statusMessage = (() => {
     if (!selectedSource || !selectedObjective) {
       return 'Selecione o objetivo, o material e o treino para liberar a geracao.';
     }
 
-    /* if (limitReached) {
-      if (selectedObjective === 'flashcards') {
-        return 'Limite mensal de geracoes atingido. Faca upgrade para Pro.';
-      }
-        return 'Limite mensal de simulados atingido. Renova no proximo mes.';
-    } */
-
     if (bancaBlocking) {
       return 'Selecione a banca para gerar um simulado com cara de prova.';
     }
 
     if (selectedObjective === 'flashcards') {
-      /* if (usage && !usage.isPro) {
-        return `${usage.flashcardsUsed}/${usage.flashcardsLimit} geracoes usadas neste mes.`;
-      } */
       return 'Use os cards para revisar os pontos que vao cair no treino.';
     }
-
-    /* if (usage) {
-      return `${usage.simuladosUsed}/${usage.simuladosLimit} simulados usados neste mes.`;
-    } */
 
     return null;
   })();
@@ -101,8 +72,6 @@ export function GenerateRunButton({
             <Icons.Loader />
             Iniciando...
           </>
-        ) : limitReached ? (
-          'Limite mensal atingido'
         ) : (
           <>
             <Icons.Sparkles />
@@ -118,7 +87,7 @@ export function GenerateRunButton({
             marginTop: 14,
             fontSize: compact ? 12 : 13,
             lineHeight: 1.45,
-            color: limitReached ? 'var(--text-warning, #F59E0B)' : 'var(--text-muted)',
+            color: 'var(--text-muted)',
           }}
         >
           {statusMessage}

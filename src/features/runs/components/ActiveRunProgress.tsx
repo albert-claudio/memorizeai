@@ -1,10 +1,46 @@
-import type { ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Icons } from './Icons';
 import type { RunWithExtras } from '../hooks/useRunCreation';
 
 interface ActiveRunProgressProps {
   activeRun: RunWithExtras;
   onRetry: () => void;
+  onCancel?: () => void;
+  canceling?: boolean;
+}
+
+const RETRY_OVERDUE_GRACE_MS = 20_000;
+
+function formatDuration(ms: number): string {
+  const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+
+  if (minutes <= 0) {
+    return `${seconds}s`;
+  }
+
+  return `${minutes}min ${seconds.toString().padStart(2, '0')}s`;
+}
+
+function getRetryState(activeRun: RunWithExtras, now: number) {
+  if (activeRun.status !== 'retry_wait' || typeof activeRun.next_attempt_at !== 'number') {
+    return null;
+  }
+
+  const remainingMs = activeRun.next_attempt_at - now;
+  const overdueMs = now - activeRun.next_attempt_at;
+
+  return {
+    remainingMs,
+    overdueMs,
+    isDue: remainingMs <= 0,
+    isOverdue: overdueMs > RETRY_OVERDUE_GRACE_MS,
+    nextAttemptLabel: new Date(activeRun.next_attempt_at).toLocaleTimeString('pt-BR', {
+      hour: '2-digit',
+      minute: '2-digit',
+    }),
+  };
 }
 
 function getStatusTitle(activeRun: RunWithExtras): string {
@@ -28,12 +64,32 @@ function getStatusTitle(activeRun: RunWithExtras): string {
   }
 }
 
-function getStatusMessage(activeRun: RunWithExtras, startedAtLabel: string | null): ReactNode {
+function getStatusMessage(activeRun: RunWithExtras, startedAtLabel: string | null, now: number): ReactNode {
+  const retryState = getRetryState(activeRun, now);
+
   switch (activeRun.status) {
     case 'queued':
       return 'Sua geracao entrou na fila e sera processada assim que houver capacidade.';
     case 'retry_wait':
-      return 'O provedor respondeu lento ou limitado. O sistema vai tentar novamente automaticamente.';
+      if (!retryState) {
+        return 'O provedor respondeu lento ou limitado. O sistema vai tentar novamente automaticamente.';
+      }
+      if (retryState.isOverdue) {
+        return (
+          <>
+            A proxima tentativa ja deveria ter iniciado. A fila pode estar atrasada; voce pode aguardar ou cancelar e gerar novamente.
+          </>
+        );
+      }
+      if (retryState.isDue) {
+        return 'A tentativa esta liberada e deve entrar na fila de processamento em instantes.';
+      }
+      return (
+        <>
+          O provedor respondeu lento ou limitado. Nova tentativa em{' '}
+          <strong>{formatDuration(retryState.remainingMs)}</strong> ({retryState.nextAttemptLabel}).
+        </>
+      );
     case 'pendente':
       return 'Iniciando processamento...';
     case 'processando':
@@ -81,13 +137,21 @@ function getProgressWidth(activeRun: RunWithExtras): string {
   }
 }
 
-export function ActiveRunProgress({ activeRun, onRetry }: ActiveRunProgressProps) {
+export function ActiveRunProgress({ activeRun, onRetry, onCancel, canceling = false }: ActiveRunProgressProps) {
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
   const startedAtLabel = activeRun.started_at
     ? new Date(activeRun.started_at).toLocaleTimeString('pt-BR', {
         hour: '2-digit',
         minute: '2-digit',
       })
     : null;
+  const retryState = getRetryState(activeRun, now);
 
   const isTerminal =
     activeRun.status === 'concluido' ||
@@ -99,6 +163,11 @@ export function ActiveRunProgress({ activeRun, onRetry }: ActiveRunProgressProps
     activeRun.status === 'retry_wait' ||
     activeRun.status === 'pendente' ||
     activeRun.status === 'processando';
+  const canCancel =
+    activeRun.status === 'pendente' ||
+    activeRun.status === 'queued' ||
+    activeRun.status === 'retry_wait';
+  const attemptLabel = Math.max(activeRun.attempt_count ?? 0, activeRun.status === 'retry_wait' ? 1 : 0);
 
   return (
     <div
@@ -154,8 +223,63 @@ export function ActiveRunProgress({ activeRun, onRetry }: ActiveRunProgressProps
       </h2>
 
       <p style={{ color: 'var(--text-secondary)', marginBottom: 16 }}>
-        {getStatusMessage(activeRun, startedAtLabel)}
+        {getStatusMessage(activeRun, startedAtLabel, now)}
       </p>
+
+      {!isTerminal && (
+        <div
+          style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            justifyContent: 'center',
+            gap: 8,
+            marginBottom: 16,
+          }}
+        >
+          {attemptLabel > 0 && (
+            <span
+              style={{
+                padding: '6px 10px',
+                borderRadius: 999,
+                background: 'rgba(255, 255, 255, 0.05)',
+                color: 'var(--text-muted)',
+                fontSize: 12,
+                fontWeight: 700,
+              }}
+            >
+              Tentativa {attemptLabel}
+            </span>
+          )}
+          {activeRun.last_error_provider && (
+            <span
+              style={{
+                padding: '6px 10px',
+                borderRadius: 999,
+                background: 'rgba(99, 102, 241, 0.12)',
+                color: '#c4b5fd',
+                fontSize: 12,
+                fontWeight: 700,
+              }}
+            >
+              Provider: {activeRun.last_error_provider}
+            </span>
+          )}
+          {retryState?.isOverdue && (
+            <span
+              style={{
+                padding: '6px 10px',
+                borderRadius: 999,
+                background: 'rgba(245, 158, 11, 0.12)',
+                color: '#fbbf24',
+                fontSize: 12,
+                fontWeight: 800,
+              }}
+            >
+              Fila atrasada
+            </span>
+          )}
+        </div>
+      )}
 
       {showProgress && (
         <div
@@ -178,6 +302,27 @@ export function ActiveRunProgress({ activeRun, onRetry }: ActiveRunProgressProps
             }}
           />
         </div>
+      )}
+
+      {canCancel && (
+        <button
+          onClick={onCancel}
+          disabled={canceling || !onCancel}
+          style={{
+            marginTop: 16,
+            padding: '12px 18px',
+            background: retryState?.isOverdue ? 'rgba(245, 158, 11, 0.12)' : 'transparent',
+            border: retryState?.isOverdue ? '1px solid rgba(245, 158, 11, 0.35)' : '1px solid var(--border)',
+            borderRadius: 10,
+            color: retryState?.isOverdue ? '#fbbf24' : 'var(--text-secondary)',
+            fontSize: 14,
+            fontWeight: 700,
+            cursor: canceling ? 'not-allowed' : 'pointer',
+            opacity: canceling ? 0.7 : 1,
+          }}
+        >
+          {canceling ? 'Cancelando...' : 'Cancelar e configurar de novo'}
+        </button>
       )}
 
       {isTerminal && activeRun.status !== 'concluido' && (

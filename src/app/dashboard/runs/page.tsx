@@ -8,7 +8,6 @@ import type { Banca, Dificuldade, RunObjective, Source } from '@/lib/types';
 import { getStudyGoalProfile, type StudyGoal } from '@/lib/study-goal-profiles';
 import { getObjectives } from '@/features/runs/constants';
 import { useSources } from '@/features/runs/hooks/useSources';
-import { useMonthlyUsage } from '@/features/runs/hooks/useMonthlyUsage';
 import { useRunCreation } from '@/features/runs/hooks/useRunCreation';
 import { useTierLimits } from '@/features/dashboard/hooks/useTierLimits';
 import {
@@ -76,9 +75,8 @@ export default function RunsPage() {
   }, [router]);
 
   const { sources, loading: loadingSources } = useSources(user?.id);
-  const { usage, refreshUsage } = useMonthlyUsage();
   const { tierLimits } = useTierLimits();
-  const { creating, activeRun, handleCreateRun, resetRun } = useRunCreation({
+  const { creating, activeRun, canceling, handleCreateRun, resetRun, cancelActiveRun, resumeActiveRun } = useRunCreation({
     userId: user?.id,
   });
 
@@ -87,6 +85,27 @@ export default function RunsPage() {
   const [selectedBanca, setSelectedBanca] = useState<Banca | null>(null);
   const [selectedDifficulty, setSelectedDifficulty] = useState<Dificuldade | null>(null);
   const [targetCount, setTargetCount] = useState(10);
+  const [sourceIdFromUpload] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null;
+    return new URLSearchParams(window.location.search).get('sourceId');
+  });
+
+  const defaultSource = useMemo(() => {
+    if (!user || loadingSources || sources.length === 0) return null;
+
+    if (sourceIdFromUpload) {
+      return sources.find(source => source.id === sourceIdFromUpload) ?? sources[0];
+    }
+
+    return sources[0];
+  }, [loadingSources, sourceIdFromUpload, sources, user]);
+
+  const effectiveSelectedSource = selectedSource ?? defaultSource;
+
+  useEffect(() => {
+    if (!user) return;
+    void resumeActiveRun();
+  }, [resumeActiveRun, user]);
 
   const isQuestoesBanca = selectedObjective === 'questoes_banca';
   const showBancaSelector = profile.supportsBanca && isQuestoesBanca;
@@ -120,7 +139,7 @@ export default function RunsPage() {
   };
 
   const onCreateRunQuery = () => {
-    if (!selectedSource || !selectedObjective) return;
+    if (!effectiveSelectedSource || !selectedObjective) return;
 
     let effectiveBanca: Banca | null = null;
     if (selectedObjective === 'questoes_banca') {
@@ -132,7 +151,7 @@ export default function RunsPage() {
     }
 
     handleCreateRun(
-      selectedSource.id,
+      effectiveSelectedSource.id,
       selectedObjective,
       targetCount,
       false,
@@ -140,8 +159,6 @@ export default function RunsPage() {
       effectiveBanca,
       selectedObjective === 'questoes_banca' ? selectedDifficulty : null,
     );
-
-    setTimeout(() => refreshUsage(), 2000);
   };
 
   const bancaRequired = profile.supportsBanca && selectedObjective === 'questoes_banca';
@@ -340,12 +357,12 @@ export default function RunsPage() {
         }
       `}</style>
 
-      <RunsHeader usage={usage} />
+      <RunsHeader />
 
       <main className={`runs-content${activeRun ? ' runs-content-scrollable' : ''}`}>
         {activeRun ? (
           <div className="runs-main-shell runs-active-shell">
-            <ActiveRunProgress activeRun={activeRun} onRetry={resetRun} />
+            <ActiveRunProgress activeRun={activeRun} onRetry={resetRun} onCancel={cancelActiveRun} canceling={canceling} />
           </div>
         ) : (
           <div className="runs-main-shell">
@@ -355,7 +372,7 @@ export default function RunsPage() {
                   compact
                   loadingSources={loadingSources}
                   sources={sources}
-                  selectedSource={selectedSource}
+                  selectedSource={effectiveSelectedSource}
                   onSelectSource={setSelectedSource}
                 />
               </section>
@@ -375,7 +392,7 @@ export default function RunsPage() {
                   <h2 style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>
                     Configuracao da geracao
                   </h2>
-                  {selectedSource ? (
+                  {effectiveSelectedSource ? (
                     <div
                       style={{
                         display: 'inline-flex',
@@ -399,7 +416,7 @@ export default function RunsPage() {
                           whiteSpace: 'nowrap',
                         }}
                       >
-                        {selectedSource.filename}
+                        {effectiveSelectedSource.filename}
                       </span>
                     </div>
                   ) : (
@@ -531,11 +548,10 @@ export default function RunsPage() {
 
                   <GenerateRunButton
                     compact
-                    selectedSource={selectedSource}
+                    selectedSource={effectiveSelectedSource}
                     selectedObjective={selectedObjective}
                     creating={creating}
                     targetCount={targetCount}
-                    usage={usage}
                     onCreateRun={onCreateRunQuery}
                     bancaBlocking={bancaBlocking}
                   />

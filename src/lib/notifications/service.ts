@@ -439,7 +439,11 @@ export async function createAppNotification(params: CreateNotificationParams) {
     if (existingError) {
       throw new Error(`Erro ao recuperar notificação existente: ${existingError.message}`);
     }
-    notification = existing as NotificationInboxRecord;
+
+    // The first insert already started the delivery pipeline. Replaying the
+    // channels for a deduplicated event would resend the same email on every
+    // cron or webhook retry.
+    return existing as NotificationInboxRecord;
   } else {
     notification = data as NotificationInboxRecord;
   }

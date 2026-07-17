@@ -1,33 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { stripe, PRO_PRICE_ID } from '@/lib/billing/stripe';
-import { timingSafeEqual } from 'crypto';
+import {
+  hasValidBillingE2EKey,
+  isBillingIntegrationRouteEnabled,
+} from '@/lib/billing/e2e-gate';
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!,
   { auth: { persistSession: false } }
 );
-
-function isBillingCheckoutE2EEnabled(): boolean {
-  return process.env.BILLING_CHECKOUT_E2E_ENABLED === 'true' && process.env.NODE_ENV !== 'production';
-}
-
-function hasValidKey(request: NextRequest): boolean {
-  const expectedKey = process.env.BILLING_E2E_SECRET;
-  const providedKey = request.headers.get('x-billing-e2e-key');
-  if (!expectedKey || !providedKey) {
-    return false;
-  }
-
-  const expectedBuffer = Buffer.from(expectedKey, 'utf8');
-  const providedBuffer = Buffer.from(providedKey, 'utf8');
-  if (expectedBuffer.length !== providedBuffer.length) {
-    return false;
-  }
-
-  return timingSafeEqual(expectedBuffer, providedBuffer);
-}
 
 function getBaseUrl(request: NextRequest): string {
   const configured = process.env.BILLING_E2E_APP_URL || process.env.NEXT_PUBLIC_APP_URL;
@@ -39,11 +22,11 @@ function getBaseUrl(request: NextRequest): string {
 
 export async function POST(request: NextRequest) {
   try {
-    if (!isBillingCheckoutE2EEnabled()) {
+    if (!isBillingIntegrationRouteEnabled('BILLING_CHECKOUT_E2E_ENABLED')) {
       return NextResponse.json({ error: 'Not found' }, { status: 404 });
     }
 
-    if (!hasValidKey(request)) {
+    if (!hasValidBillingE2EKey(request)) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
@@ -60,7 +43,7 @@ export async function POST(request: NextRequest) {
         ? body.runId.trim()
         : crypto.randomUUID().replace(/-/g, '').slice(0, 16);
 
-    const email = `billing-checkout-e2e+${runId}@vimens.app`;
+    const email = `billing-checkout-e2e+${runId}@vimens.com.br`;
     const tempPassword = `${crypto.randomUUID()}Aa1!`;
     const now = Date.now();
 
@@ -148,6 +131,7 @@ export async function POST(request: NextRequest) {
       runId,
       userId,
       email,
+      tempPassword,
       stripeCustomerId: customer.id,
       checkoutSessionId: checkoutSession.id,
       checkoutUrl: checkoutSession.url,

@@ -9,9 +9,9 @@ import { Icons } from './Icons';
 
 const NAV_ITEMS = [
   { label: 'Início', href: '/dashboard', icon: Icons.Home, exact: true },
-  { label: 'Decks', href: '/dashboard/decks', icon: Icons.Cards, exact: false },
+  { label: 'Flashcards', href: '/dashboard/decks', icon: Icons.Cards, exact: false },
   { label: 'Simulados', href: '/dashboard/simulados', icon: Icons.FileQuestion, exact: false },
-  { label: 'Desempenho', href: '/dashboard/desempenho', icon: Icons.Trophy, exact: false },
+  { label: 'Desempenho', href: '/dashboard/performance', icon: Icons.Trophy, exact: false },
   { label: 'Config.', href: '/dashboard/settings', icon: Icons.Settings, exact: false },
 ];
 
@@ -37,7 +37,7 @@ export function DashboardNav() {
 
   return (
     <>
-      <style jsx global>{`
+      <style>{`
         /* Desktop Top Header */
         .dashboard-global-nav {
           position: sticky;
@@ -45,7 +45,7 @@ export function DashboardNav() {
           z-index: 50;
           height: 64px;
           border-bottom: 1px solid rgba(255,255,255,0.06);
-          background: rgba(15, 15, 15, 0.8);
+          background: rgba(15, 17, 23, 0.85);
           backdrop-filter: blur(20px);
           -webkit-backdrop-filter: blur(20px);
           display: flex;
@@ -94,8 +94,8 @@ export function DashboardNav() {
         }
 
         .nav-link.active {
-          color: #fff;
-          background: rgba(255, 255, 255, 0.08);
+          color: #c4b5fd;
+          background: rgba(124, 58, 237, 0.2);
         }
 
         /* Mobile Bottom Tab Bar */
@@ -106,7 +106,7 @@ export function DashboardNav() {
           left: 0;
           right: 0;
           height: 64px;
-          background: rgba(15, 15, 15, 0.9);
+          background: rgba(15, 17, 23, 0.92);
           backdrop-filter: blur(20px);
           -webkit-backdrop-filter: blur(20px);
           border-top: 1px solid rgba(255,255,255,0.06);
@@ -128,7 +128,7 @@ export function DashboardNav() {
         }
 
         .mobile-tab-link.active {
-          color: #A855F7;
+          color: #7c3aed;
         }
 
         .mobile-tab-label {
@@ -160,11 +160,11 @@ export function DashboardNav() {
               width: 32,
               height: 32,
               borderRadius: 8,
-              background: 'linear-gradient(135deg, #6366F1 0%, #8B5CF6 50%, #A855F7 100%)',
+              background: 'linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              boxShadow: '0 0 20px rgba(99, 102, 241, 0.3)',
+              boxShadow: '0 0 20px rgba(124, 58, 237, 0.35)',
             }}>
               <div style={{ transform: 'scale(0.8)' }}>
                  <Icons.Brain />
@@ -174,9 +174,7 @@ export function DashboardNav() {
               fontWeight: 700,
               fontSize: 18,
               letterSpacing: '-0.02em',
-              background: 'linear-gradient(135deg, #6366F1 0%, #A855F7 100%)',
-              WebkitBackgroundClip: 'text',
-              WebkitTextFillColor: 'transparent',
+              color: '#fff',
             }}>
               Vimens
             </span>

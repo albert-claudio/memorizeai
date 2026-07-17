@@ -21,6 +21,7 @@
 /build
 
 # misc
+/tmp/
 .DS_Store
 *.pem
 
@@ -51,6 +52,7 @@ next-env.d.ts
 /src/backup/migrations_backup/
 /SUPPORT.md
 /security-audit.mjs
+/artifacts/
 
 # Sentry Config File
 .env.sentry-build-plugin

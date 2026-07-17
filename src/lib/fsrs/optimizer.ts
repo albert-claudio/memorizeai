@@ -15,6 +15,7 @@ import {
   CALIBRATION_THRESHOLD,
   MIN_REVIEWS_FOR_CALIBRATION,
 } from './weights';
+import { processReview, type SRSState } from './index';
 
 // ============================================================================
 // TYPES
@@ -34,6 +35,28 @@ interface PredictionResult {
   predictedR: number;  // Predicted retrievability
   actualSuccess: boolean;
 }
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const MIN_PREDICTION_REVIEWS = 2;
+const WEIGHT_BOUNDS: Record<keyof FSRSWeights, { min: number; max: number }> = {
+  w0: { min: 0.05, max: 3 },
+  w1: { min: 0.05, max: 5 },
+  w2: { min: 0.1, max: 15 },
+  w3: { min: 0.2, max: 30 },
+  w4: { min: 1, max: 9 },
+  w5: { min: 0.1, max: 3 },
+  w6: { min: 0.1, max: 3 },
+  w7: { min: 0.001, max: 1 },
+  w8: { min: 0.05, max: 1.5 },
+  w9: { min: 0.5, max: 5 },
+  w10: { min: 0.05, max: 2 },
+  w11: { min: 0.1, max: 5 },
+  w12: { min: 0.001, max: 1 },
+  w13: { min: 0.05, max: 2 },
+  w14: { min: 0.05, max: 2 },
+  w15: { min: 0.05, max: 1.2 },
+  w16: { min: 1, max: 5 },
+};
 
 // ============================================================================
 // METRIC CALCULATIONS
@@ -114,6 +137,11 @@ function calculateR(stability: number, elapsedDays: number): number {
   return Math.pow(1 + FACTOR * elapsedDays / stability, DECAY);
 }
 
+function clampWeight(key: keyof FSRSWeights, value: number): number {
+  const bounds = WEIGHT_BOUNDS[key];
+  return Math.max(bounds.min, Math.min(bounds.max, value));
+}
+
 // ============================================================================
 // WEIGHT OPTIMIZATION
 // ============================================================================
@@ -166,8 +194,8 @@ export function preparePredictions(
       // Skip if previous review was a lapse (stability was reset)
       if (prev.grade === 0) continue;
       
-      const elapsedDays = (curr.reviewedAt - prev.reviewedAt) / (24 * 60 * 60 * 1000);
-      const predictedR = calculateR(prev.stabilityBefore, elapsedDays);
+      const elapsedDays = (curr.reviewedAt - prev.reviewedAt) / DAY_MS;
+      const predictedR = calculateR(curr.stabilityBefore, elapsedDays);
       
       predictions.push({
         predictedR,
@@ -180,12 +208,70 @@ export function preparePredictions(
 }
 
 /**
+ * Prepare predictions by replaying each user's card history with a candidate
+ * weight set. This makes optimization actually compare weight candidates,
+ * instead of only scoring the persisted card states produced in the past.
+ */
+export function preparePredictionsWithWeights(
+  reviews: ReviewRecord[],
+  weights: FSRSWeights = DEFAULT_WEIGHTS
+): PredictionResult[] {
+  const predictions: PredictionResult[] = [];
+  const cardReviews = new Map<string, ReviewRecord[]>();
+
+  for (const review of reviews) {
+    const existing = cardReviews.get(review.cardId) || [];
+    existing.push(review);
+    cardReviews.set(review.cardId, existing);
+  }
+
+  for (const [, cardRevs] of cardReviews) {
+    cardRevs.sort((a, b) => a.reviewedAt - b.reviewedAt);
+    if (cardRevs.length < MIN_PREDICTION_REVIEWS) continue;
+
+    let state: Partial<SRSState> = {};
+    let previousReviewedAt: number | null = null;
+
+    for (const review of cardRevs) {
+      if (previousReviewedAt !== null) {
+        const elapsedDays = Math.max(0, (review.reviewedAt - previousReviewedAt) / DAY_MS);
+        const stability = Number(state.stability ?? 0);
+        predictions.push({
+          predictedR: calculateR(stability, elapsedDays),
+          actualSuccess: review.success,
+        });
+      }
+
+      const result = processReview(
+        {
+          ...state,
+          last_review_at: previousReviewedAt ?? review.reviewedAt,
+          next_review_at: review.reviewedAt,
+        },
+        review.grade,
+        review.reviewedAt,
+        { weights, desiredRetention: 0.9 },
+        false,
+      );
+
+      state = result.newState;
+      previousReviewedAt = review.reviewedAt;
+    }
+  }
+
+  return predictions;
+}
+
+/**
  * Calculate optimization metrics for current weights
  */
 export function calculateMetrics(
-  reviews: ReviewRecord[]
+  reviews: ReviewRecord[],
+  weights?: FSRSWeights
 ): OptimizationMetrics {
-  const predictions = preparePredictions(reviews);
+  const predictions = weights
+    ? preparePredictionsWithWeights(reviews, weights)
+    : preparePredictions(reviews);
   
   return {
     logLoss: calculateLogLoss(predictions),
@@ -210,16 +296,18 @@ export async function optimizeWeights(
   metrics: OptimizationMetrics;
   improved: boolean;
 }> {
-  // Calculate baseline metrics
-  const predictions = preparePredictions(reviews);
-  let bestLoss = calculateLogLoss(predictions);
+  // Calculate baseline metrics by replaying history with the current weights.
+  const baselinePredictions = preparePredictionsWithWeights(reviews, currentWeights);
+  let bestLoss = calculateLogLoss(baselinePredictions);
   let weights = { ...currentWeights };
   let improved = false;
   
   // Weights to optimize (subset for MVP)
   const optimizableKeys: (keyof FSRSWeights)[] = [
-    'w6', 'w7', 'w8', 'w9', // SInc parameters (most impactful)
+    'w0', 'w1', 'w2', 'w3', // Initial stability by first grade
+    'w6', 'w7', 'w8', 'w9', // SInc parameters
     'w10', 'w11',           // Lapse parameters
+    'w15', 'w16',           // Hard/Easy modifiers
   ];
   
   const stepSizes = [0.1, 0.05, 0.02, 0.01];
@@ -230,16 +318,13 @@ export async function optimizeWeights(
     for (const key of optimizableKeys) {
       for (const stepSize of stepSizes) {
         // Try increasing
-        const upWeights = { ...weights, [key]: weights[key] + stepSize };
-        // Note: In a real implementation, we'd recalculate predictions
-        // with the new weights. For now, we use a simplified approach.
+        const upWeights = { ...weights, [key]: clampWeight(key, weights[key] + stepSize) };
         
         // Try decreasing
-        const downWeights = { ...weights, [key]: Math.max(0.001, weights[key] - stepSize) };
+        const downWeights = { ...weights, [key]: clampWeight(key, weights[key] - stepSize) };
         
-        // Keep best (simplified - in production, recalculate predictions)
-        const upLoss = calculateLogLoss(predictions) * (1 - stepSize * 0.01);
-        const downLoss = calculateLogLoss(predictions) * (1 + stepSize * 0.01);
+        const upLoss = calculateLogLoss(preparePredictionsWithWeights(reviews, upWeights));
+        const downLoss = calculateLogLoss(preparePredictionsWithWeights(reviews, downWeights));
         
         if (upLoss < bestLoss) {
           weights = upWeights;
@@ -260,7 +345,7 @@ export async function optimizeWeights(
   
   return {
     weights,
-    metrics: calculateMetrics(reviews),
+    metrics: calculateMetrics(reviews, weights),
     improved,
   };
 }

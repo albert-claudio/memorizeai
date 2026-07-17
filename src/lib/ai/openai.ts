@@ -55,22 +55,26 @@ export async function callOpenAIText(request: AITextRequest): Promise<AITextResu
   if (!apiKey) throw new Error('OPENAI_API_KEY not configured');
 
   const startTime = Date.now();
-  const response = await fetchWithTimeout('https://api.openai.com/v1/responses', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
+  const response = await fetchWithTimeout(
+    'https://api.openai.com/v1/responses',
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: request.model,
+        instructions: request.system,
+        input: request.user,
+        max_output_tokens: request.maxOutputTokens ?? DEFAULT_OPENAI_MAX_OUTPUT_TOKENS,
+        store: false,
+        prompt_cache_key: request.promptCacheKey,
+        prompt_cache_retention: getPromptCacheRetention(request.model),
+      }),
     },
-    body: JSON.stringify({
-      model: request.model,
-      instructions: request.system,
-      input: request.user,
-      max_output_tokens: request.maxOutputTokens ?? DEFAULT_OPENAI_MAX_OUTPUT_TOKENS,
-      store: false,
-      prompt_cache_key: request.promptCacheKey,
-      prompt_cache_retention: getPromptCacheRetention(request.model),
-    }),
-  });
+    request.timeoutMs,
+  );
 
   if (!response.ok) {
     const error = await response.text();

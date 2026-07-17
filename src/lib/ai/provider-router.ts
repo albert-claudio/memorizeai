@@ -19,6 +19,10 @@ const DEFAULT_OPENAI_FLASHCARDS_MODEL =
   'gpt-4o-mini';
 const DEFAULT_OPENAI_FLASHCARDS_FALLBACK_MODEL =
   process.env.OPENAI_FLASHCARDS_FALLBACK_MODEL || 'gpt-5-mini';
+const DEFAULT_OPENAI_QUESTOES_MODEL =
+  process.env.OPENAI_QUESTOES_MODEL ||
+  process.env.OPENAI_SIMULADO_MODEL ||
+  'gpt-4.1-mini';
 
 function clampPercent(value: number): number {
   if (Number.isNaN(value)) return 0;
@@ -30,8 +34,15 @@ function rolloutBucket(seed: string): number {
   return parseInt(digest.slice(0, 8), 16) % 100;
 }
 
-function shouldRouteFlashcardsToOpenAI(runId: string): boolean {
-  const provider = (process.env.FLASHCARDS_PROVIDER || 'groq').toLowerCase();
+function getConfiguredFlashcardsProvider(): string {
+  return (process.env.FLASHCARDS_PROVIDER || 'groq').trim().toLowerCase();
+}
+
+function getOpenAIModelAlias(provider: string): string | null {
+  return provider.startsWith('gpt-') || /^o\d/.test(provider) ? provider : null;
+}
+
+function shouldRouteFlashcardsToOpenAI(runId: string, provider = getConfiguredFlashcardsProvider()): boolean {
   if (provider !== 'openai') return false;
 
   const percent = clampPercent(parseInt(process.env.FLASHCARDS_OPENAI_PERCENT || '0', 10));
@@ -45,6 +56,9 @@ export function getDefaultModelForProvider(provider: AIProvider, objective: stri
   if (provider === 'openai') {
     if (objective === 'flashcards') {
       return DEFAULT_OPENAI_FLASHCARDS_MODEL;
+    }
+    if (objective === 'questoes_banca' || objective === 'exercicios_aplicados') {
+      return DEFAULT_OPENAI_QUESTOES_MODEL;
     }
     return DEFAULT_OPENAI_FLASHCARDS_FALLBACK_MODEL;
   }
@@ -71,7 +85,13 @@ export function resolveRunProviderModel(params: {
   }
 
   if (objective === 'flashcards') {
-    const provider: AIProvider = shouldRouteFlashcardsToOpenAI(runId) ? 'openai' : 'groq';
+    const configuredProvider = getConfiguredFlashcardsProvider();
+    const openAIModelAlias = getOpenAIModelAlias(configuredProvider);
+    if (openAIModelAlias) {
+      return { provider: 'openai', model: openAIModelAlias };
+    }
+
+    const provider: AIProvider = shouldRouteFlashcardsToOpenAI(runId, configuredProvider) ? 'openai' : 'groq';
     return { provider, model: getDefaultModelForProvider(provider, objective) };
   }
 

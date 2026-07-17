@@ -2,6 +2,7 @@
 
 import Groq from 'groq-sdk';
 import { createClient } from '@/lib/supabase/server';
+import { getEffectiveProAccess } from '@/lib/billing/effective-pro-access';
 
 const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY,
@@ -60,6 +61,24 @@ export async function analyzeStruggleCard(
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) {
     return { success: false, analysis: '', memoryTip: '', simplifiedCards: [], error: 'Usuário não autenticado' };
+  }
+
+  const isPro = await getEffectiveProAccess(supabase, user.id);
+  if (!isPro) {
+    return { success: false, analysis: '', memoryTip: '', simplifiedCards: [], error: 'Recurso exclusivo para assinantes Pro.' };
+  }
+
+  const { data: ownedCard, error: ownershipError } = await supabase
+    .from('cards')
+    .select('id, deck:decks!inner(id, user_id)')
+    .eq('id', card.id)
+    .eq('deck_id', card.deck_id)
+    .eq('deck.user_id', user.id)
+    .is('deleted_at', null)
+    .single();
+
+  if (ownershipError || !ownedCard) {
+    return { success: false, analysis: '', memoryTip: '', simplifiedCards: [], error: 'Card não encontrado ou acesso negado' };
   }
   
   console.log(`[Struggle] Analisando card com dificuldade: "${card.front.substring(0, 50)}..." (${card.lapses} erros)`);
@@ -178,6 +197,11 @@ export async function applyStruggleSuggestions(
   }
 
   // SECURITY: Validate deck ownership — prevent IDOR
+  const isPro = await getEffectiveProAccess(supabase, user.id);
+  if (!isPro) {
+    return { success: false, cardsCreated: 0, error: 'Recurso exclusivo para assinantes Pro.' };
+  }
+
   const { data: deck, error: deckError } = await supabase
     .from('decks')
     .select('id')

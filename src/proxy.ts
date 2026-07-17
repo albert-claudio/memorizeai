@@ -15,7 +15,7 @@ export async function proxy(request: NextRequest) {
   // Uses Redis when available, falls back to in-memory otherwise.
   // ============================================================
   const ip = getClientIP(request)
-  const rateLimitResult = await applyRateLimit(pathname, ip)
+  const rateLimitResult = await applyRateLimit(pathname, ip, request.method)
 
   if (rateLimitResult) {
     const { success, limit, remaining, reset, mode } = rateLimitResult

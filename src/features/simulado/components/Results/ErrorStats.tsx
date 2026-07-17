@@ -15,9 +15,11 @@ function toPercent(value: number): string {
 export function ErrorStats({ respostas }: ErrorStatsProps) {
   const total = respostas.length;
   const correct = respostas.filter(r => r.correta === true).length;
-  const wrongRows = respostas.filter(r => r.correta === false);
-  const wrong = wrongRows.length;
-  const blank = respostas.filter(r => r.resposta_usuario === null).length;
+  const wrongRows = respostas.filter(r => r.correta === false && r.resposta_usuario !== null);
+  const blankRows = respostas.filter(r => r.resposta_usuario === null);
+  const missedRows = respostas.filter(r => r.correta === false || r.resposta_usuario === null);
+  const wrong = missedRows.length;
+  const blank = blankRows.length;
 
   const accuracy = total > 0 ? (correct / total) * 100 : 0;
   const errorRate = total > 0 ? (wrong / total) * 100 : 0;
@@ -37,7 +39,7 @@ export function ErrorStats({ respostas }: ErrorStatsProps) {
     }
   }
 
-  const wrongQuestionNumbers = wrongRows
+  const wrongQuestionNumbers = missedRows
     .map(r => r.questao.numero)
     .sort((a, b) => a - b);
 

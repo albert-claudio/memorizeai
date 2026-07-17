@@ -1,18 +1,7 @@
 import Link from 'next/link';
-import type { MonthlyUsage } from '@/lib/billing/run-entitlement';
 import { Icons } from './Icons';
 
-interface RunsHeaderProps {
-  usage: MonthlyUsage | null;
-}
-
-export function RunsHeader({ usage }: RunsHeaderProps) {
-  // Desativado temporariamente: geração ilimitada
-  const label = null;
-  /* const label = usage && !usage.isPro
-    ? `${usage.flashcardsUsed}/${usage.flashcardsLimit} geracoes este mes`
-    : null; */
-
+export function RunsHeader() {
   return (
     <>
       <style>{`
@@ -37,11 +26,6 @@ export function RunsHeader({ usage }: RunsHeaderProps) {
           }
 
           .runs-header-subtitle {
-            font-size: 12px !important;
-          }
-
-          .runs-header-usage {
-            padding: 6px 12px !important;
             font-size: 12px !important;
           }
         }
@@ -73,24 +57,6 @@ export function RunsHeader({ usage }: RunsHeaderProps) {
             </p>
           </div>
         </div>
-
-        {label && (
-          <div
-            className="runs-header-usage"
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              padding: '8px 16px',
-              background: 'var(--bg-muted)',
-              borderRadius: 100,
-              border: '1px solid var(--border)',
-            }}
-          >
-            <Icons.Coins />
-            <span style={{ fontSize: 14, fontWeight: 600 }}>{label}</span>
-          </div>
-        )}
       </header>
     </>
   );

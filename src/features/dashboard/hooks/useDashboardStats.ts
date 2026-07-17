@@ -12,8 +12,26 @@ export interface FocusDeck {
   avgDifficulty: number;
   avgStability: number;
   errorRate7d: number;
+  errorRate30d?: number;
+  accuracy7d?: number | null;
+  accuracy30d?: number | null;
+  trendDelta?: number | null;
   riskScore: number;
+  riskLevel?: 'low' | 'medium' | 'high';
+  primaryIssue?: DiagnosticIssue;
+  riskDrivers?: string[];
 }
+
+export type DiagnosticIssue =
+  | 'high_error'
+  | 'worsening'
+  | 'overdue'
+  | 'leeches'
+  | 'repeated_lapses'
+  | 'low_stability'
+  | 'high_difficulty'
+  | 'low_volume'
+  | 'none';
 
 export interface WeakTopic {
   key: string;
@@ -21,11 +39,19 @@ export interface WeakTopic {
   type: 'materia' | 'tema';
   errorRate7d: number;
   errorRate30d: number;
+  accuracy7d?: number | null;
+  accuracy30d?: number | null;
   totalReviews7d: number;
+  totalReviews30d?: number;
   avgLapses: number;
   avgDifficulty: number;
   avgStability: number;
   isWeak: boolean;
+  weaknessScore?: number;
+  confidence?: 'low' | 'medium' | 'high';
+  trendDelta?: number | null;
+  primaryIssue?: DiagnosticIssue;
+  recommendation?: string;
 }
 
 export interface Reinforcement {
@@ -81,7 +107,9 @@ export function useDashboardStats(userId: string | undefined) {
       now.setHours(0, 0, 0, 0);
       const startOfDay = now.getTime();
       
-      const res = await fetch(`/api/dashboard/stats?tzOffset=${tzOffset}&startOfDay=${startOfDay}`);
+      const res = await fetch(
+        `/api/dashboard/stats?tzOffset=${tzOffset}&startOfDay=${startOfDay}&seriesDays=14`,
+      );
       if (!res.ok) {
         throw new Error('Failed to fetch stats');
       }

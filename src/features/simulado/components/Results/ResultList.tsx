@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { RespostaComQuestao } from '@/features/simulado/hooks/useSimuladoResults';
 import { Icons } from '@/features/deck/components/Icons';
+import { QuestionReportButton } from '@/features/simulado/components/QuestionReportButton';
 
 export function ResultList({ respostas }: { respostas: RespostaComQuestao[] }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -143,6 +144,14 @@ function ExpandableResultItem({
               <p style={{ fontSize: 13, color: '#d4d4d8', lineHeight: 1.45 }}>{questao.citation_excerpt}</p>
             </div>
           )}
+
+          <QuestionReportButton
+            simuladoId={resposta.simulado_id}
+            questaoId={questao.id}
+            selectedAnswer={resposta.resposta_usuario}
+            context="result_review"
+            compact
+          />
         </div>
       )}
     </div>

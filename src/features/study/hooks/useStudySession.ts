@@ -236,6 +236,12 @@ export function useStudySession(deckId: string, userId: string | undefined, isPr
         interval_days: result.intervalDays,
         reviewed_at: now,
       });
+
+      if (isPro) {
+        studyService.triggerFsrsCalibration().catch((calibrationError) => {
+          console.warn('FSRS calibration skipped/failed:', calibrationError);
+        });
+      }
     } catch (err) {
       console.error('Failed to log review:', err);
       Sentry.captureException(err, { tags: { hook: 'useStudySession', action: 'logReview' } });
@@ -260,7 +266,7 @@ export function useStudySession(deckId: string, userId: string | undefined, isPr
     }, 300);
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentIndex, dueCards, fsrsConfig, userId]);
+  }, [currentIndex, dueCards, fsrsConfig, userId, isPro]);
 
   const advanceToNextCard = useCallback(() => {
     const now = Date.now();

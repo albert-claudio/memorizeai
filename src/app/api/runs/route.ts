@@ -2,12 +2,14 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { getEffectiveProAccess } from '@/lib/billing/effective-pro-access';
 import { checkRunEntitlement } from '@/lib/billing/run-entitlement';
+import { authorizeCardCreation, authorizeDeckCreation } from '@/lib/billing/tier-limits';
 import { getStudyGoalProfile } from '@/lib/study-goal-profiles';
 import { getStudyGoalByUserId } from '@/lib/study-goal/get-study-goal';
 import { isSafeEntityId } from '@/lib/security/input-validation';
 import { captureApiError, setSentryUser } from '@/lib/sentry';
-import type { RunObjective, ModelPreference, Banca, Dificuldade } from '@/lib/types';
+import type { RunObjective, ModelPreference } from '@/lib/types';
 import { triggerRunDispatch } from '@/lib/queue/trigger-run-dispatch';
+import { VALID_BANCAS, VALID_DIFICULDADES } from '@/lib/runs/process/prompts/banca';
 
 // ============================================================================
 // SHARED RUN-CREATION LOGIC
@@ -102,7 +104,7 @@ export async function POST(request: NextRequest) {
     }
 
     // ================================================================
-    // ENTITLEMENT CHECK (tier + monthly limits)
+    // ENTITLEMENT CHECK (public launch quotas and target-size limits)
     // ================================================================
     const adminSupabase = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -173,20 +175,50 @@ export async function POST(request: NextRequest) {
         );
       }
       validatedDeckId = deck.id;
+
+      const cardCapacity = await authorizeCardCreation(
+        adminSupabase,
+        validatedDeckId,
+        user.id,
+        validatedTargetCount,
+      );
+      if (!cardCapacity.allowed) {
+        return NextResponse.json(
+          { error: cardCapacity.reason },
+          { status: 403 },
+        );
+      }
+    } else if (objective === 'flashcards') {
+      const deckCapacity = await authorizeDeckCreation(adminSupabase, user.id);
+      if (!deckCapacity.allowed) {
+        return NextResponse.json(
+          { error: deckCapacity.reason },
+          { status: 403 },
+        );
+      }
     }
 
     // ================================================================
     // BANCA / DIFICULDADE VALIDATION (same as createRun server action)
     // ================================================================
-    const VALID_BANCAS: Banca[] = ['FCC', 'FGV', 'CESPE'];
-    const VALID_DIFICULDADES: Dificuldade[] = ['facil', 'medio', 'dificil', 'muito_dificil'];
+    const safeBanca = typeof banca === 'string' ? banca : null;
+    const safeDificuldade = typeof dificuldade === 'string' ? dificuldade : null;
 
-    const safeBanca = objective === 'questoes_banca' && banca && VALID_BANCAS.includes(banca)
-      ? banca
-      : null;
-    const safeDificuldade = objective === 'questoes_banca' && dificuldade && VALID_DIFICULDADES.includes(dificuldade)
-      ? dificuldade
-      : null;
+    if (objective === 'questoes_banca') {
+      if (!safeBanca || !VALID_BANCAS.includes(safeBanca)) {
+        return NextResponse.json(
+          { error: `Invalid banca. Must be: ${VALID_BANCAS.join(', ')}` },
+          { status: 400 },
+        );
+      }
+
+      if (!safeDificuldade || !VALID_DIFICULDADES.includes(safeDificuldade)) {
+        return NextResponse.json(
+          { error: `Invalid dificuldade. Must be: ${VALID_DIFICULDADES.join(', ')}` },
+          { status: 400 },
+        );
+      }
+    }
 
     // ================================================================
     // CREATE RUN — enqueue as 'queued', dispatcher handles processing
@@ -211,8 +243,10 @@ export async function POST(request: NextRequest) {
       created_at: now,
       updated_at: now,
     };
-    if (safeBanca) runPayload.banca = safeBanca;
-    if (safeDificuldade) runPayload.dificuldade = safeDificuldade;
+    if (objective === 'questoes_banca') {
+      runPayload.banca = safeBanca;
+      runPayload.dificuldade = safeDificuldade;
+    }
 
     const { error: insertError } = await adminSupabase
       .from('runs')
@@ -271,6 +305,59 @@ export async function GET(request: NextRequest) {
     }
 
     const { searchParams } = new URL(request.url);
+    const runId = searchParams.get('runId');
+    const active = searchParams.get('active') === 'true' || searchParams.get('active') === '1';
+
+    if (runId) {
+      if (!isSafeEntityId(runId)) {
+        return NextResponse.json(
+          { error: 'Invalid runId format' },
+          { status: 400 }
+        );
+      }
+
+      const { data: run, error } = await supabase
+        .from('runs')
+        .select(`
+          *,
+          source:sources(id, filename),
+          deck:decks(id, title)
+        `)
+        .eq('id', runId)
+        .eq('user_id', user.id)
+        .is('deleted_at', null)
+        .single();
+
+      if (error) {
+        captureApiError(error, { route: '/api/runs', userId: user.id, tags: { method: 'GET', action: 'get_run' } });
+        return NextResponse.json({ error: 'Run not found' }, { status: 404 });
+      }
+
+      return NextResponse.json({ run });
+    }
+
+    if (active) {
+      const { data: runs, error } = await supabase
+        .from('runs')
+        .select(`
+          *,
+          source:sources(id, filename),
+          deck:decks(id, title)
+        `)
+        .eq('user_id', user.id)
+        .is('deleted_at', null)
+        .in('status', ['pendente', 'queued', 'retry_wait', 'processando'])
+        .order('created_at', { ascending: false })
+        .limit(1);
+
+      if (error) {
+        captureApiError(error, { route: '/api/runs', userId: user.id, tags: { method: 'GET', action: 'get_active_run' } });
+        return NextResponse.json({ error: 'Failed to fetch active run' }, { status: 500 });
+      }
+
+      return NextResponse.json({ run: runs?.[0] ?? null });
+    }
+
     const MAX_LIMIT = 100;
     const limit = Math.min(Math.max(1, parseInt(searchParams.get('limit') || '20') || 20), MAX_LIMIT);
 

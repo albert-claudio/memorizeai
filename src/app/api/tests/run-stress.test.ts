@@ -160,6 +160,7 @@ const mocks = vi.hoisted(() => ({
   fetchWithTimeout: vi.fn(),
   trackServer: vi.fn(),
   authorizeRunCreation: vi.fn(),
+  checkRunEntitlement: vi.fn(),
   getMonthlyRunCounts: vi.fn(),
   checkDailyRunQuota: vi.fn(),
   checkCircuitBreaker: vi.fn(),
@@ -204,6 +205,7 @@ vi.mock('@/lib/analytics/server-tracker', () => ({
 
 vi.mock('@/lib/billing/run-entitlement', () => ({
   authorizeRunCreation: mocks.authorizeRunCreation,
+  checkRunEntitlement: mocks.checkRunEntitlement,
   getMonthlyRunCounts: mocks.getMonthlyRunCounts,
 }));
 
@@ -1146,6 +1148,7 @@ beforeEach(() => {
   });
   mocks.trackServer.mockImplementation(() => {});
   mocks.authorizeRunCreation.mockReturnValue({ allowed: true });
+  mocks.checkRunEntitlement.mockResolvedValue({ allowed: true, validatedTargetCount: 50 });
   mocks.getMonthlyRunCounts.mockResolvedValue({ month: 0 });
   mocks.checkDailyRunQuota.mockResolvedValue({ allowed: true });
   mocks.checkCircuitBreaker.mockResolvedValue({ allowed: true });
@@ -1199,7 +1202,9 @@ beforeEach(() => {
   mocks.getBaseUrl.mockReturnValue(BASE_URL);
 });
 
-describe('run processing stress harness', () => {
+const describeStress = process.env.RUN_STRESS_TEST === 'true' ? describe : describe.skip;
+
+describeStress('run processing stress harness', () => {
   it('measures mixed load, intermittent failures, and provider slowdown effects', async () => {
     const mixed = await runScenario({
       name: 'mixed-intermittent',

@@ -73,7 +73,7 @@ export async function getAdminAccessState(requireMfa = true): Promise<AdminAcces
 
   if (profileError || !isAdminRole(profile?.app_role)) {
     console.warn(
-      `[Admin Guard] Non-admin access attempt: ${email}${profileError ? ` (${profileError.message})` : ''}`
+      `[Admin Guard] Non-admin access attempt: user ${user.id}${profileError ? ` (${profileError.message})` : ''}`
     );
     return {
       ok: false,

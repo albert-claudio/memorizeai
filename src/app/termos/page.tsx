@@ -161,8 +161,8 @@ export default function TermosPage() {
             <h2 style={sectionTitleStyle}>10. Contato</h2>
             <p style={paragraphStyle}>
               Dúvidas sobre estes Termos, cobrança, cancelamento ou reembolso podem ser encaminhadas para{' '}
-              <a href="mailto:suporte@vimens.app" style={{ color: 'var(--accent)' }}>
-                suporte@vimens.app
+              <a href="mailto:suporte@vimens.com.br" style={{ color: 'var(--accent)' }}>
+                suporte@vimens.com.br
               </a>
               .
             </p>

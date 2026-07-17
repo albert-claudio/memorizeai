@@ -15,9 +15,19 @@ import {
 } from '@/lib/source-digest';
 import { SOURCE_DIGEST_VERSION } from '@/lib/source-digest-prompts';
 import { captureApiError, setSentryUser } from '@/lib/sentry';
+import { internalServerErrorResponse } from '@/lib/security/api-error';
+import {
+  DOCUMENT_UPLOAD_ACKNOWLEDGEMENT_CODE,
+  DOCUMENT_UPLOAD_ACKNOWLEDGEMENT_ERROR,
+  DOCUMENT_UPLOAD_ACKNOWLEDGEMENT_VERSION,
+  isDocumentUploadAcknowledged,
+} from '@/lib/document-upload-acknowledgement';
 
 export const maxDuration = 120; // 2 minutes timeout
 export const dynamic = 'force-dynamic';
+
+const MAX_EXTRACTED_TEXT_CHARS = 1_000_000;
+const MAX_SLIDES = 500;
 
 // Generate cryptographically secure random ID
 function generateId(): string {
@@ -197,11 +207,38 @@ export async function POST(request: NextRequest) {
       return authCheck; // Returns 401 error response
     }
 
-    const { sourceId, extractedText, slides } = await request.json();
+    const {
+      sourceId,
+      extractedText,
+      slides,
+      uploadAcknowledged,
+      uploadAcknowledgementVersion,
+    } = await request.json();
     
     if (!sourceId || !extractedText) {
       return NextResponse.json(
         { error: 'sourceId and extractedText are required' },
+        { status: 400 }
+      );
+    }
+
+    if (typeof extractedText !== 'string') {
+      return NextResponse.json(
+        { error: 'extractedText must be a string' },
+        { status: 400 }
+      );
+    }
+
+    if (extractedText.length > MAX_EXTRACTED_TEXT_CHARS) {
+      return NextResponse.json(
+        { error: 'Documento excede o limite de texto processavel. Envie um arquivo menor.' },
+        { status: 413 }
+      );
+    }
+
+    if (slides !== undefined && (!Array.isArray(slides) || slides.length > MAX_SLIDES)) {
+      return NextResponse.json(
+        { error: 'slides invalido ou acima do limite permitido' },
         { status: 400 }
       );
     }
@@ -211,6 +248,29 @@ export async function POST(request: NextRequest) {
         { error: 'Invalid sourceId format' },
         { status: 400 }
       );
+    }
+
+    if (!isDocumentUploadAcknowledged(uploadAcknowledged)) {
+      return NextResponse.json(
+        {
+          error: DOCUMENT_UPLOAD_ACKNOWLEDGEMENT_ERROR,
+          code: DOCUMENT_UPLOAD_ACKNOWLEDGEMENT_CODE,
+          requiredVersion: DOCUMENT_UPLOAD_ACKNOWLEDGEMENT_VERSION,
+        },
+        { status: 400 }
+      );
+    }
+
+    if (
+      typeof uploadAcknowledgementVersion === 'string'
+      && uploadAcknowledgementVersion !== DOCUMENT_UPLOAD_ACKNOWLEDGEMENT_VERSION
+    ) {
+      console.warn('[process-source] Unexpected upload acknowledgement version:', {
+        sourceId,
+        userId: authCheck.user.id,
+        uploadAcknowledgementVersion,
+        expectedVersion: DOCUMENT_UPLOAD_ACKNOWLEDGEMENT_VERSION,
+      });
     }
 
     // ============================================================
@@ -225,18 +285,37 @@ export async function POST(request: NextRequest) {
     // Create Supabase client with service role for database operations
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
     const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-    const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-    
-    // Use service key if available, otherwise use anon key
-    const supabase = createClient(supabaseUrl, supabaseServiceKey || supabaseAnonKey);
+
+    if (!supabaseServiceKey) {
+      console.error('[process-source] SUPABASE_SERVICE_ROLE_KEY is not configured');
+      return internalServerErrorResponse();
+    }
+
+    const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
     const { data: sourceRow } = await supabase
       .from('sources')
-      .select('filename')
+      .select('filename, status')
       .eq('id', sourceId)
       .single();
 
     const sourceFilename = sourceRow?.filename ?? 'Seu documento';
+
+    if (sourceRow?.status === 'processando') {
+      return NextResponse.json(
+        { error: 'Fonte ja esta em processamento' },
+        { status: 409 }
+      );
+    }
+
+    if (sourceRow?.status === 'concluido') {
+      return NextResponse.json({
+        ok: true,
+        skipped: true,
+        status: 'concluido',
+        message: 'Fonte ja processada',
+      });
+    }
 
     console.log(`[process-source] Starting processing for source ${sourceId} by user ${authResult.user.id}`);
     setSentryUser({ id: authResult.user.id, email: authResult.user.email });
@@ -548,16 +627,13 @@ export async function POST(request: NextRequest) {
         tags: { sourceId, action: 'processing' },
       });
       return NextResponse.json(
-        { error: errorMessage },
+        { error: 'Falha ao processar a fonte. Tente novamente.' },
         { status: 500 }
       );
     }
 
   } catch (error) {
     captureApiError(error, { route: '/api/process-source', tags: { action: 'request' } });
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Unknown error' },
-      { status: 500 }
-    );
+    return internalServerErrorResponse();
   }
 }

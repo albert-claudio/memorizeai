@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { isSafeEntityId } from '@/lib/security/input-validation';
+import { getEffectiveProAccess } from '@/lib/billing/effective-pro-access';
 import type { ExamTarget } from '@/lib/types';
 
 function isExamTargetsUnavailable(
@@ -89,6 +90,16 @@ export async function GET(
       return NextResponse.json({ error: 'Deck não encontrado' }, { status: 404 });
     }
 
+    const hasProAccess = await getEffectiveProAccess(supabase, user.id);
+    if (!hasProAccess) {
+      return NextResponse.json({
+        examTarget: null,
+        prioritizeNearExam: false,
+        unavailable: false,
+        locked: true,
+      });
+    }
+
     const prioritizeNearExam = await getPrioritizeNearExam(supabase, user.id);
     const { data, error } = await getExamTargetByDeck(supabase, deckId, user.id);
 
@@ -152,6 +163,18 @@ export async function PUT(
     const deck = await validateDeckOwnership(supabase, deckId, user.id);
     if (!deck) {
       return NextResponse.json({ error: 'Deck não encontrado' }, { status: 404 });
+    }
+
+    const putHasProAccess = await getEffectiveProAccess(supabase, user.id);
+    if (!putHasProAccess) {
+      return NextResponse.json(
+        {
+          error: 'Meta de prova é exclusiva para planos Pro e Premium.',
+          code: 'PRO_REQUIRED',
+          upgradeUrl: '/upgrade',
+        },
+        { status: 403 },
+      );
     }
 
     const { data: existing, error: existingError } = await getExamTargetByDeck(supabase, deckId, user.id);
@@ -226,6 +249,18 @@ export async function DELETE(
     const deck = await validateDeckOwnership(supabase, deckId, user.id);
     if (!deck) {
       return NextResponse.json({ error: 'Deck não encontrado' }, { status: 404 });
+    }
+
+    const deleteHasProAccess = await getEffectiveProAccess(supabase, user.id);
+    if (!deleteHasProAccess) {
+      return NextResponse.json(
+        {
+          error: 'Meta de prova é exclusiva para planos Pro e Premium.',
+          code: 'PRO_REQUIRED',
+          upgradeUrl: '/upgrade',
+        },
+        { status: 403 },
+      );
     }
 
     const { data: existing, error: existingError } = await getExamTargetByDeck(supabase, deckId, user.id);

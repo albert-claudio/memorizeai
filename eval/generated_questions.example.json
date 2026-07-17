@@ -1,0 +1,18 @@
+[
+  {
+    "id": "generated-oab-001",
+    "origem": "gerada",
+    "exam": "pipeline-oab",
+    "area": "preencher_area",
+    "enunciado": "Cole aqui uma questão gerada pelo pipeline.",
+    "alternativas": [
+      "A) Alternativa gerada.",
+      "B) Alternativa gerada.",
+      "C) Alternativa gerada.",
+      "D) Alternativa gerada.",
+      "E) Alternativa gerada."
+    ],
+    "respostaCorreta": "A",
+    "comentario": "Cole o comentário/fonte gerado pelo pipeline."
+  }
+]

@@ -1,4 +1,37 @@
 import Stripe from "stripe";
+import { mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
+
+const args = process.argv.slice(2);
+const isStripeStagingValidate = args.includes("--billing-staging-validate");
+const startedAt = new Date();
+const defaultArtifactDir = path.join(process.cwd(), "artifacts", "billing");
+const artifactDir = getArgValue("--artifact-dir") || process.env.BILLING_E2E_ARTIFACT_DIR || defaultArtifactDir;
+const artifactFileName = `stripe-staging-validate-${startedAt.toISOString().replace(/[:.]/g, "-")}.json`;
+const artifactPath = path.join(artifactDir, artifactFileName);
+
+const summary = {
+  schemaVersion: 1,
+  runType: isStripeStagingValidate ? "stripe-staging-validate" : "live-integration-smoke",
+  command: isStripeStagingValidate
+    ? "npm run stripe:staging:validate"
+    : "npm run test:live-integration",
+  startedAt: startedAt.toISOString(),
+  finishedAt: null,
+  status: "running",
+  appUrl: process.env.BILLING_E2E_APP_URL || null,
+  nodeVersion: process.version,
+  stages: [],
+  cleanupWarnings: [],
+};
+
+function getArgValue(name) {
+  const index = args.indexOf(name);
+  if (index === -1) {
+    return null;
+  }
+  return args[index + 1] || null;
+}
 
 function requireEnv(name) {
   const value = process.env[name];
@@ -10,6 +43,87 @@ function requireEnv(name) {
 
 function asBool(value) {
   return String(value || "").toLowerCase() === "true";
+}
+
+function isEnabledForBillingStage(envName) {
+  return isStripeStagingValidate || asBool(process.env[envName]);
+}
+
+function recordCleanupWarning(resource, error) {
+  const message = error instanceof Error ? error.message : String(error);
+  summary.cleanupWarnings.push({
+    resource,
+    message,
+    at: new Date().toISOString(),
+  });
+  console.warn(`[live-smoke] Cleanup warning (${resource}):`, message);
+}
+
+async function runStage(name, fn) {
+  const stage = {
+    name,
+    startedAt: new Date().toISOString(),
+    finishedAt: null,
+    status: "running",
+    evidence: null,
+  };
+  summary.stages.push(stage);
+
+  try {
+    const evidence = await fn();
+    stage.status = evidence?.skipped ? "skipped" : "passed";
+    stage.evidence = evidence ?? {};
+    return evidence;
+  } catch (error) {
+    stage.status = "failed";
+    stage.error = error instanceof Error ? error.message : String(error);
+    throw error;
+  } finally {
+    stage.finishedAt = new Date().toISOString();
+  }
+}
+
+function validateStagingTarget() {
+  if (!isStripeStagingValidate) {
+    return;
+  }
+
+  const rawAppUrl = requireEnv("BILLING_E2E_APP_URL");
+  let appUrl;
+  try {
+    appUrl = new URL(rawAppUrl);
+  } catch {
+    throw new Error(`BILLING_E2E_APP_URL must be a valid URL, got: ${rawAppUrl}`);
+  }
+
+  if (appUrl.protocol !== "https:") {
+    throw new Error("stripe:staging:validate requires BILLING_E2E_APP_URL to use https.");
+  }
+
+  if (["localhost", "127.0.0.1", "::1"].includes(appUrl.hostname)) {
+    throw new Error("stripe:staging:validate must target deployed staging, not localhost.");
+  }
+
+  const stripeKey = requireEnv("STRIPE_SECRET_KEY");
+  if (!stripeKey.startsWith("sk_test_") && !stripeKey.startsWith("rk_test_")) {
+    throw new Error("stripe:staging:validate must use a Stripe test-mode secret key.");
+  }
+}
+
+async function writeSummaryArtifact(status, error = null) {
+  if (!isStripeStagingValidate) {
+    return;
+  }
+
+  summary.status = status;
+  summary.finishedAt = new Date().toISOString();
+  if (error) {
+    summary.error = error instanceof Error ? error.message : String(error);
+  }
+
+  await mkdir(artifactDir, { recursive: true });
+  await writeFile(artifactPath, `${JSON.stringify(summary, null, 2)}\n`, "utf8");
+  console.log(`[live-smoke] Evidence artifact written: ${artifactPath}`);
 }
 
 function sleep(ms) {
@@ -37,6 +151,118 @@ async function readJson(response, context) {
   } catch (error) {
     throw new Error(`${context} returned invalid JSON: ${String(error)}. Body: ${raw.slice(0, 400)}`);
   }
+}
+
+function splitSetCookieHeader(header) {
+  if (!header) {
+    return [];
+  }
+  return header.split(/,(?=\s*[^;,]+=)/g).map((value) => value.trim()).filter(Boolean);
+}
+
+function getSetCookies(response) {
+  if (typeof response.headers.getSetCookie === "function") {
+    return response.headers.getSetCookie();
+  }
+  return splitSetCookieHeader(response.headers.get("set-cookie"));
+}
+
+class CookieJar {
+  constructor() {
+    this.cookies = new Map();
+  }
+
+  store(response) {
+    for (const setCookie of getSetCookies(response)) {
+      const [pair, ...attributes] = setCookie.split(";");
+      const separatorIndex = pair.indexOf("=");
+      if (separatorIndex <= 0) {
+        continue;
+      }
+
+      const name = pair.slice(0, separatorIndex).trim();
+      const value = pair.slice(separatorIndex + 1).trim();
+      const shouldDelete = attributes.some((attribute) => {
+        const normalized = attribute.trim().toLowerCase();
+        return normalized === "max-age=0" || normalized.startsWith("expires=thu, 01 jan 1970");
+      });
+
+      if (shouldDelete) {
+        this.cookies.delete(name);
+      } else {
+        this.cookies.set(name, value);
+      }
+    }
+  }
+
+  header() {
+    return Array.from(this.cookies.entries())
+      .map(([name, value]) => `${name}=${value}`)
+      .join("; ");
+  }
+}
+
+async function fetchWithCookies(jar, url, init = {}) {
+  const headers = new Headers(init.headers || {});
+  const cookieHeader = jar.header();
+  if (cookieHeader) {
+    headers.set("cookie", cookieHeader);
+  }
+
+  const response = await fetch(url, {
+    ...init,
+    headers,
+  });
+  jar.store(response);
+  return response;
+}
+
+async function authenticateIntegrationUser(appUrl, email, password) {
+  const jar = new CookieJar();
+  const csrfResponse = await fetchWithCookies(
+    jar,
+    `${appUrl}/api/auth/csrf`,
+    { method: "GET" }
+  );
+  if (csrfResponse.status !== 200) {
+    const body = await csrfResponse.text();
+    throw new Error(`Login CSRF failed: ${csrfResponse.status} ${body.slice(0, 300)}`);
+  }
+  const csrf = await readJson(csrfResponse, "Login CSRF");
+  if (!csrf.token) {
+    throw new Error("Login CSRF route did not return a token.");
+  }
+
+  const loginResponse = await fetchWithCookies(
+    jar,
+    `${appUrl}/api/auth/login`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-csrf-token": csrf.token,
+        origin: appUrl,
+      },
+      body: JSON.stringify({ email, password }),
+    }
+  );
+  if (loginResponse.status !== 200) {
+    const body = await loginResponse.text();
+    throw new Error(`Integration user login failed: ${loginResponse.status} ${body.slice(0, 300)}`);
+  }
+
+  return jar;
+}
+
+async function expectAuthenticatedJson(jar, url, init, allowedStatuses, context) {
+  const response = await fetchWithCookies(jar, url, init);
+  if (!allowedStatuses.includes(response.status)) {
+    const body = await response.text();
+    throw new Error(
+      `${context} failed: expected status ${allowedStatuses.join(" or ")}, got ${response.status}. Body: ${body.slice(0, 400)}`
+    );
+  }
+  return readJson(response, context);
 }
 
 function createSupabaseRestClient() {
@@ -148,6 +374,15 @@ async function runSupabaseChecks() {
     [200],
     "Supabase profiles access with service role key"
   );
+
+  return {
+    supabaseUrl,
+    checks: [
+      "auth_health",
+      "anon_profiles_blocked",
+      "service_role_profiles_access",
+    ],
+  };
 }
 
 async function runStripeChecks(stripe) {
@@ -167,6 +402,11 @@ async function runStripeChecks(stripe) {
       throw new Error("Stripe Enterprise price lookup failed.");
     }
   }
+
+  return {
+    proPriceId,
+    enterprisePriceId: enterprisePriceId || null,
+  };
 }
 
 async function tryFillOnPage(page, selector, value) {
@@ -280,10 +520,36 @@ async function findEventForSubscription(stripe, type, subscriptionId, createdGte
   return findEventForObject(stripe, type, subscriptionId, createdGteSec);
 }
 
+async function postSignedWebhook(appUrl, stripe, webhookSecret, event, allowedStatuses, context) {
+  const payload = JSON.stringify(event);
+  const signature = stripe.webhooks.generateTestHeaderString({
+    payload,
+    secret: webhookSecret,
+    timestamp: Math.floor(Date.now() / 1000),
+  });
+
+  const response = await expectStatus(
+    `${appUrl}/api/stripe/webhook`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "stripe-signature": signature,
+        "x-forwarded-for": "3.18.12.63",
+      },
+      body: payload,
+    },
+    allowedStatuses,
+    context
+  );
+
+  return readJson(response, context);
+}
+
 async function runBillingWebhookE2E(stripe) {
-  if (!asBool(process.env.BILLING_E2E_ENABLED)) {
+  if (!isEnabledForBillingStage("BILLING_E2E_ENABLED")) {
     console.log("[live-smoke] Billing webhook E2E disabled. Skipping.");
-    return;
+    return { skipped: true, reason: "BILLING_E2E_ENABLED is not true" };
   }
 
   const appUrl = requireEnv("BILLING_E2E_APP_URL").replace(/\/+$/, "");
@@ -298,6 +564,9 @@ async function runBillingWebhookE2E(stripe) {
   let userId = null;
   let stripeCustomerId = null;
   let stripeSubscriptionId = null;
+  let updatedEventId = null;
+  let transientEventId = null;
+  let permanentEventId = null;
 
   try {
     console.log("[live-smoke] Billing E2E: creating integration entities in staging...");
@@ -426,6 +695,134 @@ async function runBillingWebhookE2E(stripe) {
       );
     }
 
+    console.log("[live-smoke] Billing E2E: validating transient_failure retry semantics...");
+    transientEventId = `evt_e2e_transient_${runId}`;
+    const transientEvent = {
+      id: transientEventId,
+      object: "event",
+      api_version: "2025-12-15.clover",
+      created: Math.floor(Date.now() / 1000),
+      livemode: false,
+      type: "customer.subscription.updated",
+      data: {
+        object: {
+          id: stripeSubscriptionId,
+          object: "subscription",
+          customer: stripeCustomerId,
+          status: "active",
+          cancel_at_period_end: false,
+          metadata: { user_id: userId },
+          current_period_start: Math.floor(Date.now() / 1000),
+          current_period_end: Math.floor(Date.now() / 1000) + 2592000,
+          items: {
+            data: [{ price: { id: `price_unmapped_${runId}` } }],
+          },
+        },
+      },
+    };
+
+    const transientJson = await postSignedWebhook(
+      appUrl,
+      stripe,
+      webhookSecret,
+      transientEvent,
+      [500],
+      "Synthetic transient_failure webhook replay"
+    );
+    if (transientJson.outcome !== "transient_failure") {
+      throw new Error(`Expected transient_failure outcome, got ${JSON.stringify(transientJson)}`);
+    }
+
+    await waitFor(
+      "webhook log for transient_failure event",
+      async () => {
+        const rows = await supabase.select(
+          "webhook_logs",
+          `select=event_id,success,outcome&event_id=eq.${transientEventId}`
+        );
+        const row = rows?.[0];
+        return row?.outcome === "transient_failure" && row?.success === false ? row : null;
+      },
+      pollTimeoutMs,
+      pollIntervalMs
+    );
+
+    const transientRetryJson = await postSignedWebhook(
+      appUrl,
+      stripe,
+      webhookSecret,
+      transientEvent,
+      [500],
+      "Synthetic transient_failure webhook retry"
+    );
+    if (transientRetryJson.outcome !== "transient_failure") {
+      throw new Error(`Expected transient_failure retry outcome, got ${JSON.stringify(transientRetryJson)}`);
+    }
+
+    console.log("[live-smoke] Billing E2E: validating permanent_failure terminal semantics...");
+    permanentEventId = `evt_e2e_permanent_${runId}`;
+    const permanentEvent = {
+      id: permanentEventId,
+      object: "event",
+      api_version: "2025-12-15.clover",
+      created: Math.floor(Date.now() / 1000),
+      livemode: false,
+      type: "customer.subscription.updated",
+      data: {
+        object: {
+          id: `sub_missing_${runId}`,
+          object: "subscription",
+          customer: `cus_missing_${runId}`,
+          status: "active",
+          cancel_at_period_end: false,
+          metadata: {},
+          current_period_start: Math.floor(Date.now() / 1000),
+          current_period_end: Math.floor(Date.now() / 1000) + 2592000,
+          items: {
+            data: [{ price: { id: requireEnv("STRIPE_PRO_PRICE_ID") } }],
+          },
+        },
+      },
+    };
+
+    const permanentJson = await postSignedWebhook(
+      appUrl,
+      stripe,
+      webhookSecret,
+      permanentEvent,
+      [200],
+      "Synthetic permanent_failure webhook replay"
+    );
+    if (permanentJson.outcome !== "permanent_failure") {
+      throw new Error(`Expected permanent_failure outcome, got ${JSON.stringify(permanentJson)}`);
+    }
+
+    await waitFor(
+      "webhook log for permanent_failure event",
+      async () => {
+        const rows = await supabase.select(
+          "webhook_logs",
+          `select=event_id,success,outcome&event_id=eq.${permanentEventId}`
+        );
+        const row = rows?.[0];
+        return row?.outcome === "permanent_failure" && row?.success === true ? row : null;
+      },
+      pollTimeoutMs,
+      pollIntervalMs
+    );
+
+    const permanentDuplicateJson = await postSignedWebhook(
+      appUrl,
+      stripe,
+      webhookSecret,
+      permanentEvent,
+      [200],
+      "Synthetic permanent_failure duplicate replay"
+    );
+    if (!permanentDuplicateJson?.duplicate) {
+      throw new Error(`Expected permanent_failure duplicate replay to return duplicate=true, got ${JSON.stringify(permanentDuplicateJson)}`);
+    }
+
     console.log("[live-smoke] Billing E2E: triggering customer.subscription.deleted...");
     const deleteCreatedGte = Math.floor(Date.now() / 1000) - 5;
     await stripe.subscriptions.cancel(stripeSubscriptionId);
@@ -483,28 +880,45 @@ async function runBillingWebhookE2E(stripe) {
     );
 
     console.log("[live-smoke] Billing webhook E2E passed.");
+    return {
+      runId,
+      userId,
+      stripeCustomerId,
+      stripeSubscriptionId,
+      updatedEventId,
+      transientEventId,
+      permanentEventId,
+      checks: [
+        "bootstrap_created_user_customer_subscription",
+        "customer_subscription_updated_webhook_applied",
+        "duplicate_signed_replay_acknowledged",
+        "transient_failure_allows_retry",
+        "permanent_failure_blocks_retry",
+        "customer_subscription_deleted_webhook_applied",
+      ],
+    };
   } finally {
     if (stripeCustomerId) {
       try {
         await stripe.customers.del(stripeCustomerId);
       } catch (error) {
-        console.warn("[live-smoke] Cleanup warning (customer):", error instanceof Error ? error.message : error);
+        recordCleanupWarning("customer", error);
       }
     }
     if (userId) {
       try {
         await supabase.deleteAuthUser(userId);
       } catch (error) {
-        console.warn("[live-smoke] Cleanup warning (user):", error instanceof Error ? error.message : error);
+        recordCleanupWarning("user", error);
       }
     }
   }
 }
 
 async function runBillingCheckoutE2E(stripe) {
-  if (!asBool(process.env.BILLING_CHECKOUT_E2E_ENABLED)) {
+  if (!isEnabledForBillingStage("BILLING_CHECKOUT_E2E_ENABLED")) {
     console.log("[live-smoke] Billing checkout E2E disabled. Skipping.");
-    return;
+    return { skipped: true, reason: "BILLING_CHECKOUT_E2E_ENABLED is not true" };
   }
 
   const appUrl = requireEnv("BILLING_E2E_APP_URL").replace(/\/+$/, "");
@@ -519,6 +933,7 @@ async function runBillingCheckoutE2E(stripe) {
   let stripeCustomerId = null;
   let checkoutSessionId = null;
   let stripeSubscriptionId = null;
+  let completedEventId = null;
 
   try {
     console.log("[live-smoke] Billing Checkout E2E: creating checkout session in staging...");
@@ -579,6 +994,7 @@ async function runBillingCheckoutE2E(stripe) {
       pollTimeoutMs,
       pollIntervalMs
     );
+    completedEventId = completedEvent.id;
 
     const subFromSession = completedSession.subscription;
     stripeSubscriptionId = typeof subFromSession === "string" ? subFromSession : subFromSession?.id || null;
@@ -648,41 +1064,354 @@ async function runBillingCheckoutE2E(stripe) {
     }
 
     console.log("[live-smoke] Billing Checkout E2E passed.");
+    return {
+      runId,
+      userId,
+      stripeCustomerId,
+      checkoutSessionId,
+      stripeSubscriptionId,
+      completedEventId,
+      checks: [
+        "checkout_session_created",
+        "hosted_checkout_completed",
+        "checkout_webhook_upgraded_profile",
+        "checkout_webhook_log_successful",
+      ],
+    };
   } finally {
     if (stripeSubscriptionId) {
       try {
         await stripe.subscriptions.cancel(stripeSubscriptionId);
       } catch (error) {
-        console.warn("[live-smoke] Cleanup warning (subscription):", error instanceof Error ? error.message : error);
+        recordCleanupWarning("subscription", error);
       }
     }
     if (stripeCustomerId) {
       try {
         await stripe.customers.del(stripeCustomerId);
       } catch (error) {
-        console.warn("[live-smoke] Cleanup warning (customer):", error instanceof Error ? error.message : error);
+        recordCleanupWarning("customer", error);
       }
     }
     if (userId) {
       try {
         await supabase.deleteAuthUser(userId);
       } catch (error) {
-        console.warn("[live-smoke] Cleanup warning (user):", error instanceof Error ? error.message : error);
+        recordCleanupWarning("user", error);
       }
     }
   }
 }
 
+async function runBillingAppRouteE2E(stripe) {
+  if (!isEnabledForBillingStage("BILLING_APP_ROUTE_E2E_ENABLED")) {
+    console.log("[live-smoke] Billing app-route E2E disabled. Skipping.");
+    return { skipped: true, reason: "BILLING_APP_ROUTE_E2E_ENABLED is not true" };
+  }
+
+  const appUrl = requireEnv("BILLING_E2E_APP_URL").replace(/\/+$/, "");
+  const e2eSecret = requireEnv("BILLING_E2E_SECRET");
+  const pollTimeoutMs = Number(process.env.BILLING_E2E_POLL_TIMEOUT_MS || 180000);
+  const pollIntervalMs = Number(process.env.BILLING_E2E_POLL_INTERVAL_MS || 3000);
+  const originHeaders = { origin: appUrl };
+  const supabase = createSupabaseRestClient();
+
+  async function createCheckoutRun() {
+    const runId = `app_checkout_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+    const response = await expectStatus(
+      `${appUrl}/api/stripe/integration/create-checkout-session`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-billing-e2e-key": e2eSecret,
+        },
+        body: JSON.stringify({ runId }),
+      },
+      [200],
+      "Billing app-route checkout setup"
+    );
+    const setup = await readJson(response, "Billing app-route checkout setup");
+    if (!setup.userId || !setup.email || !setup.tempPassword || !setup.stripeCustomerId || !setup.checkoutSessionId || !setup.checkoutUrl) {
+      throw new Error("Checkout app-route setup did not return required fields.");
+    }
+    return setup;
+  }
+
+  async function createSubscriptionRun(prefix) {
+    const runId = `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+    const response = await expectStatus(
+      `${appUrl}/api/stripe/integration/bootstrap`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-billing-e2e-key": e2eSecret,
+        },
+        body: JSON.stringify({ runId }),
+      },
+      [200],
+      `Billing app-route ${prefix} bootstrap`
+    );
+    const setup = await readJson(response, `Billing app-route ${prefix} bootstrap`);
+    if (!setup.userId || !setup.email || !setup.tempPassword || !setup.stripeCustomerId || !setup.stripeSubscriptionId) {
+      throw new Error(`${prefix} bootstrap did not return required fields.`);
+    }
+    return setup;
+  }
+
+  async function cleanup(setup, subscriptionId) {
+    if (subscriptionId) {
+      try {
+        const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+        if (subscription && subscription.status !== "canceled") {
+          await stripe.subscriptions.cancel(subscriptionId);
+        }
+      } catch (error) {
+        recordCleanupWarning("subscription", error);
+      }
+    }
+    if (setup?.stripeCustomerId) {
+      try {
+        await stripe.customers.del(setup.stripeCustomerId);
+      } catch (error) {
+        recordCleanupWarning("customer", error);
+      }
+    }
+    if (setup?.userId) {
+      try {
+        await supabase.deleteAuthUser(setup.userId);
+      } catch (error) {
+        recordCleanupWarning("user", error);
+      }
+    }
+  }
+
+  let checkoutSetup = null;
+  let checkoutSubscriptionId = null;
+  let confirmSessionId = null;
+  try {
+    console.log("[live-smoke] Billing app-route E2E: checkout, confirm, status, portal...");
+    checkoutSetup = await createCheckoutRun();
+    const checkoutJar = await authenticateIntegrationUser(
+      appUrl,
+      checkoutSetup.email,
+      checkoutSetup.tempPassword
+    );
+
+    await completeStripeCheckoutUI(checkoutSetup.checkoutUrl);
+    const completedSession = await waitFor(
+      "Stripe checkout session completion for app-route validation",
+      async () => {
+        const session = await stripe.checkout.sessions.retrieve(checkoutSetup.checkoutSessionId);
+        if (session.status === "complete" && session.payment_status === "paid") {
+          return session;
+        }
+        return null;
+      },
+      pollTimeoutMs,
+      pollIntervalMs
+    );
+    const sessionSubscription = completedSession.subscription;
+    checkoutSubscriptionId = typeof sessionSubscription === "string"
+      ? sessionSubscription
+      : sessionSubscription?.id || null;
+
+    const confirm = await expectAuthenticatedJson(
+      checkoutJar,
+      `${appUrl}/api/stripe/confirm-checkout`,
+      {
+        method: "POST",
+        headers: {
+          ...originHeaders,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ sessionId: checkoutSetup.checkoutSessionId }),
+      },
+      [200],
+      "Confirm checkout route"
+    );
+    if (!confirm.ok || confirm.tier !== "pro" || confirm.status !== "active") {
+      throw new Error(`Confirm checkout returned unexpected payload: ${JSON.stringify(confirm)}`);
+    }
+    confirmSessionId = checkoutSetup.checkoutSessionId;
+
+    const status = await expectAuthenticatedJson(
+      checkoutJar,
+      `${appUrl}/api/stripe/subscription-status`,
+      { method: "GET" },
+      [200],
+      "Subscription status after checkout"
+    );
+    if (status.isPro !== true || status.status !== "active" || status.tier !== "pro" || status.isTrial !== false) {
+      throw new Error(`Subscription status after checkout is incorrect: ${JSON.stringify(status)}`);
+    }
+
+    const portal = await expectAuthenticatedJson(
+      checkoutJar,
+      `${appUrl}/api/stripe/create-portal`,
+      {
+        method: "POST",
+        headers: originHeaders,
+      },
+      [200],
+      "Create billing portal route"
+    );
+    if (typeof portal.url !== "string" || !portal.url.startsWith("https://billing.stripe.com/")) {
+      throw new Error(`Billing portal route returned unexpected URL: ${JSON.stringify(portal)}`);
+    }
+  } finally {
+    await cleanup(checkoutSetup, checkoutSubscriptionId);
+  }
+
+  let cancelSetup = null;
+  try {
+    console.log("[live-smoke] Billing app-route E2E: cancel subscription route...");
+    cancelSetup = await createSubscriptionRun("app_cancel");
+    const cancelJar = await authenticateIntegrationUser(
+      appUrl,
+      cancelSetup.email,
+      cancelSetup.tempPassword
+    );
+
+    const cancel = await expectAuthenticatedJson(
+      cancelJar,
+      `${appUrl}/api/stripe/cancel-subscription`,
+      {
+        method: "POST",
+        headers: originHeaders,
+      },
+      [200],
+      "Cancel subscription route"
+    );
+    if (cancel.ok !== true || cancel.alreadyScheduled !== false) {
+      throw new Error(`Cancel route returned unexpected payload: ${JSON.stringify(cancel)}`);
+    }
+
+    const canceledSubscription = await stripe.subscriptions.retrieve(cancelSetup.stripeSubscriptionId);
+    if (canceledSubscription.cancel_at_period_end !== true) {
+      throw new Error("Stripe subscription was not scheduled for cancellation.");
+    }
+
+    await waitFor(
+      "subscription row scheduled for cancellation by app route",
+      async () => {
+        const rows = await supabase.select(
+          "subscriptions",
+          `select=stripe_subscription_id,cancel_at_period_end&stripe_subscription_id=eq.${cancelSetup.stripeSubscriptionId}`
+        );
+        return rows?.[0]?.cancel_at_period_end === true ? rows[0] : null;
+      },
+      pollTimeoutMs,
+      pollIntervalMs
+    );
+
+    const status = await expectAuthenticatedJson(
+      cancelJar,
+      `${appUrl}/api/stripe/subscription-status`,
+      { method: "GET" },
+      [200],
+      "Subscription status after cancel"
+    );
+    if (status.cancelAtPeriodEnd !== true || status.isPro !== false) {
+      throw new Error(`Subscription status after cancel is incorrect: ${JSON.stringify(status)}`);
+    }
+  } finally {
+    await cleanup(cancelSetup, cancelSetup?.stripeSubscriptionId);
+  }
+
+  let refundSetup = null;
+  let refundId = null;
+  try {
+    console.log("[live-smoke] Billing app-route E2E: refund subscription route...");
+    refundSetup = await createSubscriptionRun("app_refund");
+    const refundJar = await authenticateIntegrationUser(
+      appUrl,
+      refundSetup.email,
+      refundSetup.tempPassword
+    );
+
+    const refund = await expectAuthenticatedJson(
+      refundJar,
+      `${appUrl}/api/stripe/refund-subscription`,
+      {
+        method: "POST",
+        headers: originHeaders,
+      },
+      [200],
+      "Refund subscription route"
+    );
+    if (refund.ok !== true || typeof refund.refundId !== "string" || refund.amountRefunded <= 0) {
+      throw new Error(`Refund route returned unexpected payload: ${JSON.stringify(refund)}`);
+    }
+    refundId = refund.refundId;
+
+    const stripeRefund = await stripe.refunds.retrieve(refund.refundId);
+    if (!stripeRefund || stripeRefund.id !== refund.refundId) {
+      throw new Error("Stripe refund created by app route was not found.");
+    }
+
+    await waitFor(
+      "profile canceled by refund route",
+      async () => {
+        const rows = await supabase.select(
+          "profiles",
+          `select=id,is_pro,subscription_status,subscription_tier&id=eq.${refundSetup.userId}`
+        );
+        const row = rows?.[0];
+        return row?.is_pro === false && row?.subscription_status === "canceled" && row?.subscription_tier === "free"
+          ? row
+          : null;
+      },
+      pollTimeoutMs,
+      pollIntervalMs
+    );
+
+  } finally {
+    await cleanup(refundSetup, refundSetup?.stripeSubscriptionId);
+  }
+
+  console.log("[live-smoke] Billing app-route E2E passed.");
+  return {
+    checkoutRunId: checkoutSetup?.runId ?? null,
+    confirmSessionId,
+    checkoutSubscriptionId,
+    cancelRunId: cancelSetup?.runId ?? null,
+    cancelSubscriptionId: cancelSetup?.stripeSubscriptionId ?? null,
+    refundRunId: refundSetup?.runId ?? null,
+    refundSubscriptionId: refundSetup?.stripeSubscriptionId ?? null,
+    refundId,
+    checks: [
+      "confirm_checkout_returns_paid_pro",
+      "subscription_status_returns_paid_pro_without_trial_masking",
+      "billing_portal_url_created",
+      "cancel_subscription_schedules_cancel_at_period_end",
+      "refund_subscription_creates_stripe_refund_and_downgrades_profile",
+    ],
+  };
+}
+
 async function main() {
+  validateStagingTarget();
   const stripe = createStripeClient();
-  await runSupabaseChecks();
-  await runStripeChecks(stripe);
-  await runBillingWebhookE2E(stripe);
-  await runBillingCheckoutE2E(stripe);
+  await runStage("supabase", () => runSupabaseChecks());
+  await runStage("stripe_catalog", () => runStripeChecks(stripe));
+  await runStage("billing_webhook_e2e", () => runBillingWebhookE2E(stripe));
+  await runStage("billing_checkout_e2e", () => runBillingCheckoutE2E(stripe));
+  await runStage("billing_app_routes_e2e", () => runBillingAppRouteE2E(stripe));
   console.log("[live-smoke] All checks passed.");
 }
 
-main().catch((error) => {
-  console.error("[live-smoke] FAILED:", error instanceof Error ? error.message : error);
-  process.exit(1);
-});
+main()
+  .then(async () => {
+    await writeSummaryArtifact("passed");
+  })
+  .catch(async (error) => {
+    console.error("[live-smoke] FAILED:", error instanceof Error ? error.message : error);
+    try {
+      await writeSummaryArtifact("failed", error);
+    } catch (artifactError) {
+      console.error("[live-smoke] Failed to write evidence artifact:", artifactError instanceof Error ? artifactError.message : artifactError);
+    }
+    process.exit(1);
+  });

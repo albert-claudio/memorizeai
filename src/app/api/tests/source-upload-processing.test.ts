@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest, NextResponse } from 'next/server';
+import JSZip from 'jszip';
 
 const mocks = vi.hoisted(() => ({
   createSupabaseClient: vi.fn(),
@@ -166,6 +167,12 @@ function buildLargeDocument(pageCount: number, sentencesPerPage: number = 12): s
   }).join('\n\n');
 }
 
+async function buildDocxBuffer(documentXml: string): Promise<ArrayBuffer> {
+  const zip = new JSZip();
+  zip.file('word/document.xml', documentXml);
+  return zip.generateAsync({ type: 'arraybuffer' });
+}
+
 function buildSlideDeck(slideCount: number, groupSize: number = 5) {
   return Array.from({ length: slideCount }, (_, index) => {
     const topic = Math.floor(index / groupSize) + 1;
@@ -178,6 +185,19 @@ function buildSlideDeck(slideCount: number, groupSize: number = 5) {
         'Exemplos, distinções e consequências do instituto estudado.',
       ].join(' '),
     };
+  });
+}
+
+function appendUploadAcknowledgement(formData: FormData) {
+  formData.append('uploadAcknowledged', 'true');
+  formData.append('uploadAcknowledgementVersion', '2026-03-16');
+}
+
+function acknowledgedProcessBody(body: Record<string, unknown>) {
+  return JSON.stringify({
+    ...body,
+    uploadAcknowledged: true,
+    uploadAcknowledgementVersion: '2026-03-16',
   });
 }
 
@@ -242,6 +262,7 @@ describe('source upload route: /api/extract-document', () => {
   it('rejects unsupported file types before extraction', async () => {
     const formData = new FormData();
     formData.append('file', new File(['hello'], 'notes.txt', { type: 'text/plain' }));
+    appendUploadAcknowledgement(formData);
 
     const { POST } = await import('@/app/api/extract-document/route');
 
@@ -258,14 +279,9 @@ describe('source upload route: /api/extract-document', () => {
     });
   }, 15000);
 
-  it('rejects oversized files before spending CPU on extraction', async () => {
+  it('requires explicit upload acknowledgement before reading document bytes', async () => {
     const formData = new FormData();
-    formData.append(
-      'file',
-      new File([new Uint8Array(50 * 1024 * 1024 + 1)], 'abuse.pdf', {
-        type: 'application/pdf',
-      })
-    );
+    formData.append('file', new File(['hello'], 'notes.txt', { type: 'text/plain' }));
 
     const { POST } = await import('@/app/api/extract-document/route');
 
@@ -278,7 +294,80 @@ describe('source upload route: /api/extract-document', () => {
 
     expect(response.status).toBe(400);
     expect(json).toEqual({
-      error: 'Arquivo muito grande. Máximo: 50MB',
+      error: 'Antes de enviar, confirme que voce tem direito ou autorizacao para usar este material e base legal adequada para dados pessoais de terceiros.',
+      code: 'DOCUMENT_UPLOAD_ACKNOWLEDGEMENT_REQUIRED',
+      requiredVersion: '2026-03-16',
+    });
+  }, 15000);
+
+  it('rejects oversized files before spending CPU on extraction', async () => {
+    const formData = new FormData();
+    formData.append(
+      'file',
+      new File([new Uint8Array(50 * 1024 * 1024 + 1)], 'abuse.pdf', {
+        type: 'application/pdf',
+      })
+    );
+    appendUploadAcknowledgement(formData);
+
+    const { POST } = await import('@/app/api/extract-document/route');
+
+    const request = {
+      formData: vi.fn().mockResolvedValue(formData),
+    } as unknown as NextRequest;
+
+    const response = await POST(request);
+    const json = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(json.error).toMatch(/Arquivo muito grande/i);
+    expect(json.error).toMatch(/50MB/);
+  }, 15000);
+
+  it('rejects files whose bytes do not match the declared document type', async () => {
+    const formData = new FormData();
+    formData.append('file', new File(['not really a pdf'], 'spoofed.pdf', { type: 'application/pdf' }));
+    appendUploadAcknowledgement(formData);
+
+    const { POST } = await import('@/app/api/extract-document/route');
+
+    const request = {
+      formData: vi.fn().mockResolvedValue(formData),
+    } as unknown as NextRequest;
+
+    const response = await POST(request);
+    const json = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(json.error).toMatch(/não corresponde a um PDF válido/i);
+  }, 15000);
+
+  it('rejects valid Office files with no useful extracted text', async () => {
+    const formData = new FormData();
+    const buffer = await buildDocxBuffer(
+      '<?xml version="1.0"?><w:document><w:body><w:p /></w:body></w:document>',
+    );
+    formData.append(
+      'file',
+      new File([buffer], 'empty.docx', {
+        type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      }),
+    );
+    appendUploadAcknowledgement(formData);
+
+    const { POST } = await import('@/app/api/extract-document/route');
+
+    const request = {
+      formData: vi.fn().mockResolvedValue(formData),
+    } as unknown as NextRequest;
+
+    const response = await POST(request);
+    const json = await response.json();
+
+    expect(response.status).toBe(422);
+    expect(json).toEqual({
+      error: 'Documento sem conteúdo textual útil para processamento.',
+      code: 'EMPTY_EXTRACTED_TEXT',
     });
   }, 15000);
 });
@@ -295,7 +384,7 @@ describe('source processing route: /api/process-source', () => {
     const request = new NextRequest('https://vimens.app/api/process-source', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
+      body: acknowledgedProcessBody({
         sourceId: 'source_1',
         extractedText: 'Art. 5. Todos são iguais perante a lei.',
       }),
@@ -365,7 +454,7 @@ describe('source processing route: /api/process-source', () => {
     const request = new NextRequest('https://vimens.app/api/process-source', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
+      body: acknowledgedProcessBody({
         sourceId: 'source_2',
         extractedText,
       }),
@@ -403,7 +492,7 @@ describe('source processing route: /api/process-source', () => {
     const request = new NextRequest('https://vimens.app/api/process-source', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
+      body: acknowledgedProcessBody({
         sourceId: 'source_250_pages',
         extractedText: buildLargeDocument(250),
       }),
@@ -431,7 +520,7 @@ describe('source processing route: /api/process-source', () => {
     const request = new NextRequest('https://vimens.app/api/process-source', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
+      body: acknowledgedProcessBody({
         sourceId: 'source_250_slides',
         extractedText: slides.map(slide => `${slide.title}\n${slide.body}`).join('\n\n'),
         slides,
@@ -468,7 +557,7 @@ describe('source processing route: /api/process-source', () => {
     const request = new NextRequest('https://vimens.app/api/process-source', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
+      body: acknowledgedProcessBody({
         sourceId: 'source_victim',
         extractedText: 'conteudo qualquer',
       }),
@@ -489,7 +578,7 @@ describe('source processing route: /api/process-source', () => {
     const request = new NextRequest('https://memoriza.app/api/process-source', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
+      body: acknowledgedProcessBody({
         sourceId: 'source_1,or(id.is.not.null)',
         extractedText: 'conteudo qualquer',
       }),
@@ -505,6 +594,30 @@ describe('source processing route: /api/process-source', () => {
     expect(mocks.requireAuthAndOwnership).not.toHaveBeenCalled();
   });
 
+  it('requires explicit upload acknowledgement before persisting extracted text', async () => {
+    const { POST } = await import('@/app/api/process-source/route');
+
+    const request = new NextRequest('https://memoriza.app/api/process-source', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        sourceId: 'source_missing_ack',
+        extractedText: 'conteudo qualquer',
+      }),
+    });
+
+    const response = await POST(request);
+    const json = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(json).toEqual({
+      error: 'Antes de enviar, confirme que voce tem direito ou autorizacao para usar este material e base legal adequada para dados pessoais de terceiros.',
+      code: 'DOCUMENT_UPLOAD_ACKNOWLEDGEMENT_REQUIRED',
+      requiredVersion: '2026-03-16',
+    });
+    expect(mocks.requireAuthAndOwnership).not.toHaveBeenCalled();
+  });
+
   it('rejects whitespace-only extracted payloads to avoid useless chunk writes', async () => {
     const supabase = createProcessSourceSupabaseMock({
       sourceFilename: 'lixo.pdf',
@@ -516,7 +629,7 @@ describe('source processing route: /api/process-source', () => {
     const request = new NextRequest('https://memoriza.app/api/process-source', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
+      body: acknowledgedProcessBody({
         sourceId: 'source_empty',
         extractedText: '   \n\n   ',
       }),

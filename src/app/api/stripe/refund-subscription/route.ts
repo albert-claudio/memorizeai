@@ -3,44 +3,9 @@ import Stripe from 'stripe';
 import { createClient } from '@/lib/supabase/server';
 import { createClient as createSupabaseAdmin, type SupabaseClient } from '@supabase/supabase-js';
 import { stripe } from '@/lib/billing/stripe';
-import { getBaseUrl } from '@/lib/url';
+import { getAllowedRequestOrigins, getRequestOrigin } from '@/lib/security/request-origin';
 
 const REFUND_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
-
-function normalizeOrigin(value: string | null): string | null {
-  if (!value) {
-    return null;
-  }
-
-  try {
-    return new URL(value).origin;
-  } catch {
-    return null;
-  }
-}
-
-function getRequestOrigin(request: NextRequest): string | null {
-  const originHeader = request.headers.get('origin');
-  if (originHeader) {
-    return normalizeOrigin(originHeader);
-  }
-
-  return normalizeOrigin(request.headers.get('referer'));
-}
-
-function getAllowedOrigins(request: NextRequest): Set<string> {
-  return new Set(
-    [
-      request.nextUrl.origin,
-      getBaseUrl(),
-      'https://vimens.app',
-      'https://www.vimens.app',
-      'http://localhost:3000',
-    ]
-      .map((origin) => normalizeOrigin(origin ?? null))
-      .filter((origin): origin is string => Boolean(origin))
-  );
-}
 
 function toUnixMs(value: unknown): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
@@ -83,6 +48,23 @@ function getRefundTarget(invoice: Stripe.Invoice): {
   payment_intent?: string;
   charge?: string;
 } | null {
+  const invoicePayments = invoice.payments?.data ?? [];
+  const paidInvoicePayment = invoicePayments.find((payment) => (
+    payment.status === 'paid' || payment.is_default
+  )) ?? invoicePayments[0];
+  const invoicePaymentIntentId = getStripeId(
+    paidInvoicePayment?.payment?.payment_intent ?? null
+  );
+  if (invoicePaymentIntentId) {
+    return { payment_intent: invoicePaymentIntentId };
+  }
+  const invoicePaymentChargeId = getStripeId(
+    paidInvoicePayment?.payment?.charge ?? null
+  );
+  if (invoicePaymentChargeId) {
+    return { charge: invoicePaymentChargeId };
+  }
+
   const invoiceWithPaymentIntent = invoice as Stripe.Invoice & {
     payment_intent?: string | Stripe.PaymentIntent | null;
   };
@@ -135,7 +117,7 @@ async function resolveStripeCustomerId(
 
 export async function POST(request: NextRequest) {
   try {
-    const allowedOrigins = getAllowedOrigins(request);
+    const allowedOrigins = getAllowedRequestOrigins(request);
     const requestOrigin = getRequestOrigin(request);
 
     if (!requestOrigin || !allowedOrigins.has(requestOrigin)) {
@@ -189,6 +171,7 @@ export async function POST(request: NextRequest) {
       customer: stripeCustomerId,
       subscription: activeSubscription.id,
       limit: 10,
+      expand: ['data.payments'],
     });
 
     const latestPaidInvoice = invoiceList.data.find((invoice) => (

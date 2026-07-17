@@ -19,6 +19,17 @@ export const ALLOWED_ANALYTICS_EVENTS = [
 export type AnalyticsEventName = (typeof ALLOWED_ANALYTICS_EVENTS)[number];
 
 const ALLOWED_ANALYTICS_EVENT_SET = new Set<string>(ALLOWED_ANALYTICS_EVENTS);
+const CLIENT_TRACKABLE_ANALYTICS_EVENT_SET = new Set<string>([
+  'landing_view',
+  'signup_click',
+  'signup_submit',
+  'login_success',
+  'dashboard_view',
+  'upload_start',
+  'upload_complete',
+  'upgrade_view',
+  'checkout_click',
+]);
 
 export interface AnalyticsEventInput {
   event: string;
@@ -34,6 +45,10 @@ export interface SanitizedAnalyticsEvent {
 
 export function isAllowedAnalyticsEvent(event: string): event is AnalyticsEventName {
   return ALLOWED_ANALYTICS_EVENT_SET.has(event);
+}
+
+export function isClientTrackableAnalyticsEvent(event: string): event is AnalyticsEventName {
+  return CLIENT_TRACKABLE_ANALYTICS_EVENT_SET.has(event);
 }
 
 export function sanitizeAnalyticsProperties(

@@ -3,11 +3,26 @@ import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { hasProAccess } from '@/lib/billing/pro-access';
 import { getEffectiveProAccess } from '@/lib/billing/effective-pro-access';
-import { activateBetaInviteForUser, hasActiveBetaAccess } from '@/lib/beta/invites';
-import { stripe } from '@/lib/billing/stripe';
+import {
+  ensureFreeTrialForUser,
+  hasActiveFreeTrialAccess,
+  isInternalAccessSubscription,
+  isLegacyBetaSubscription,
+} from '@/lib/billing/free-trial';
+import { getSubscriptionTier, stripe } from '@/lib/billing/stripe';
 import { createClient as createSupabaseAdmin, type SupabaseClient } from '@supabase/supabase-js';
 
 const REFUND_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+interface SubscriptionRow {
+  status?: string | null;
+  cancel_at_period_end?: boolean | null;
+  current_period_start?: number | null;
+  current_period_end?: number | null;
+  price_id?: string | null;
+  stripe_subscription_id?: string | null;
+  stripe_customer_id?: string | null;
+}
 
 function toUnixMs(value: unknown): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
@@ -19,6 +34,72 @@ function toUnixMs(value: unknown): number | null {
 
 function isRefundableSubscriptionStatus(status: Stripe.Subscription.Status): boolean {
   return !['canceled', 'incomplete_expired'].includes(status);
+}
+
+function hasActiveInternalAccess(row: SubscriptionRow | null | undefined, nowMs = Date.now()): boolean {
+  if (!row) {
+    return false;
+  }
+
+  return ['active', 'past_due', 'trialing'].includes(row.status ?? '')
+    && row.cancel_at_period_end !== true
+    && typeof row.current_period_end === 'number'
+    && row.current_period_end > nowMs;
+}
+
+function hasStripeBackedAccess(params: {
+  profile: {
+    is_pro?: boolean | null;
+    admin_override_pro?: boolean | null;
+    subscription_status?: string | null;
+    subscription_period_end?: number | null;
+  };
+  subscriptionRow?: SubscriptionRow | null;
+}): boolean {
+  if (params.profile.admin_override_pro) {
+    return true;
+  }
+
+  const subscriptionRow = params.subscriptionRow;
+  if (!subscriptionRow || isInternalAccessSubscription(subscriptionRow)) {
+    return false;
+  }
+
+  const tier = getSubscriptionTier(subscriptionRow.price_id ?? null);
+  if (tier !== 'pro' && tier !== 'enterprise') {
+    return false;
+  }
+
+  return hasProAccess({
+    is_pro: params.profile.is_pro,
+    subscription_status: subscriptionRow.status ?? params.profile.subscription_status,
+    subscription_period_end:
+      subscriptionRow.current_period_end ?? params.profile.subscription_period_end,
+    cancel_at_period_end: subscriptionRow.cancel_at_period_end,
+    admin_override_pro: params.profile.admin_override_pro,
+  });
+}
+
+function resolveResponseTier(params: {
+  isActive: boolean;
+  trialAccess: boolean;
+  profileTier?: string | null;
+  subscriptionPriceId?: string | null;
+}): string {
+  if (!params.isActive) {
+    return 'free';
+  }
+
+  if (params.trialAccess) {
+    return 'pro';
+  }
+
+  if (params.profileTier && params.profileTier !== 'free') {
+    return params.profileTier;
+  }
+
+  const tierFromPrice = getSubscriptionTier(params.subscriptionPriceId ?? null);
+  return tierFromPrice === 'free' ? 'free' : tierFromPrice;
 }
 
 async function resolveStripeCustomerId(
@@ -39,25 +120,22 @@ async function resolveStripeCustomerId(
     return profile.stripe_customer_id;
   }
 
-  const { data: latestSubscription, error: subscriptionError } = await supabaseAdmin
+  const { data: latestSubscriptions, error: subscriptionError } = await supabaseAdmin
     .from('subscriptions')
     .select('stripe_customer_id')
     .eq('user_id', userId)
     .order('updated_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .limit(20);
 
   if (subscriptionError) {
     console.warn('[Subscription Status] Unable to read subscriptions fallback:', subscriptionError);
     return null;
   }
 
-  const fallbackCustomerId = latestSubscription?.stripe_customer_id ?? null;
-  if (fallbackCustomerId?.startsWith('beta_')) {
-    return null;
-  }
+  const latestBillableSubscription = ((latestSubscriptions ?? []) as SubscriptionRow[])
+    .find((subscription) => !isInternalAccessSubscription(subscription));
 
-  return fallbackCustomerId;
+  return latestBillableSubscription?.stripe_customer_id ?? null;
 }
 
 export async function GET() {
@@ -94,35 +172,48 @@ export async function GET() {
         cancelAtPeriodEnd: false,
         isActive: false,
         isBeta: false,
+        isTrial: false,
         refundEligibleUntil: null,
         refundEligible: false,
       });
     }
 
-    const { data: subscriptionRow, error: subscriptionRowError } = await supabase
+    const { data: subscriptionRowsData, error: subscriptionRowError } = await supabase
       .from('subscriptions')
-      .select('status, cancel_at_period_end, current_period_start, current_period_end')
+      .select('status, cancel_at_period_end, current_period_start, current_period_end, price_id, stripe_subscription_id, stripe_customer_id')
       .eq('user_id', user.id)
       .order('updated_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
+      .limit(20);
 
     if (subscriptionRowError) {
       console.warn('[Subscription Status] Unable to read subscriptions row:', subscriptionRowError);
     }
 
-    const periodStart = subscriptionRow?.current_period_start ?? null;
-    const periodEnd = profile.subscription_period_end
-      || subscriptionRow?.current_period_end
+    const subscriptionRows = ((subscriptionRowsData ?? []) as SubscriptionRow[]);
+    const latestSubscriptionRow = subscriptionRows[0] ?? null;
+    const latestBillableSubscriptionRow = subscriptionRows
+      .find((subscription) => !isInternalAccessSubscription(subscription)) ?? null;
+    const latestInternalSubscriptionRow = subscriptionRows
+      .find((subscription) => isInternalAccessSubscription(subscription)) ?? null;
+    const displaySubscriptionRow = latestBillableSubscriptionRow
+      ?? latestInternalSubscriptionRow
+      ?? latestSubscriptionRow;
+
+    let periodStart = displaySubscriptionRow?.current_period_start ?? null;
+    let periodEnd = displaySubscriptionRow?.current_period_end
+      || profile.subscription_period_end
       || null;
-    const status = profile.subscription_status
-      || subscriptionRow?.status
+    let status = displaySubscriptionRow?.status
+      || profile.subscription_status
       || 'free';
-    const cancelAtPeriodEnd = Boolean(subscriptionRow?.cancel_at_period_end);
+    const cancelAtPeriodEnd = Boolean(displaySubscriptionRow?.cancel_at_period_end);
 
     let refundEligibleUntil: number | null = null;
     let refundEligible = false;
-    let betaAccess = false;
+    let trialAccess = false;
+    let betaAccess = subscriptionRows.some((subscription) => (
+      isLegacyBetaSubscription(subscription) && hasActiveInternalAccess(subscription)
+    ));
     let effectiveAccess: boolean | null = null;
 
     if (process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
@@ -132,15 +223,36 @@ export async function GET() {
           process.env.SUPABASE_SERVICE_ROLE_KEY,
         );
 
-        effectiveAccess = await getEffectiveProAccess(supabaseAdmin, user.id);
-        betaAccess = await hasActiveBetaAccess({ admin: supabaseAdmin, userId: user.id, email: user.email });
-        if (betaAccess && user.email) {
-          await activateBetaInviteForUser({
+        const stripeBackedAccess = hasStripeBackedAccess({
+          profile,
+          subscriptionRow: latestBillableSubscriptionRow,
+        });
+        const hasBillableSubscriptionHistory = Boolean(latestBillableSubscriptionRow);
+
+        if (stripeBackedAccess) {
+          effectiveAccess = true;
+          trialAccess = false;
+          betaAccess = false;
+        } else if (betaAccess) {
+          effectiveAccess = true;
+          trialAccess = false;
+        } else if (!hasBillableSubscriptionHistory) {
+          const trialResult = await ensureFreeTrialForUser({
             admin: supabaseAdmin,
             userId: user.id,
-            email: user.email,
           });
-          effectiveAccess = true;
+          trialAccess = await hasActiveFreeTrialAccess({ admin: supabaseAdmin, userId: user.id });
+          if (trialAccess) {
+            effectiveAccess = true;
+            status = 'trialing';
+            periodStart = trialResult.periodStart ?? periodStart;
+            periodEnd = trialResult.periodEnd ?? periodEnd;
+          } else {
+            effectiveAccess = await getEffectiveProAccess(supabaseAdmin, user.id);
+          }
+        } else {
+          trialAccess = false;
+          effectiveAccess = false;
         }
 
         const stripeCustomerId = await resolveStripeCustomerId(supabaseAdmin, user.id);
@@ -183,20 +295,27 @@ export async function GET() {
     // ================================================================
     // 3. CALCULATE IF SUBSCRIPTION IS ACTIVE
     // ================================================================
-    const isActive = betaAccess || (effectiveAccess ?? hasProAccess({
+    const isActive = trialAccess || (effectiveAccess ?? hasProAccess({
       ...profile,
       subscription_status: status,
       subscription_period_end: periodEnd,
       cancel_at_period_end: cancelAtPeriodEnd,
     }));
-    const responseStatus = betaAccess
-      ? 'beta'
+    const responseStatus = trialAccess
+      ? 'trialing'
       : isActive
       ? status
-      : status === 'active' || status === 'past_due'
+      : status === 'active' || status === 'past_due' || status === 'trialing'
         ? 'free'
         : status;
-    const responseTier = betaAccess ? 'pro' : isActive ? (profile.subscription_tier || 'free') : 'free';
+    const responseTier = resolveResponseTier({
+      isActive,
+      trialAccess,
+      profileTier: betaAccess && isActive ? 'pro' : profile.subscription_tier,
+      subscriptionPriceId: latestBillableSubscriptionRow?.price_id,
+    });
+    const responsePeriodStart = responseStatus === 'free' ? null : periodStart;
+    const responsePeriodEnd = responseStatus === 'free' ? null : periodEnd;
 
     // ================================================================
     // 4. RETURN SUBSCRIPTION STATUS
@@ -205,11 +324,12 @@ export async function GET() {
       isPro: isActive,
       status: responseStatus,
       tier: responseTier,
-      periodStart,
-      periodEnd,
+      periodStart: responsePeriodStart,
+      periodEnd: responsePeriodEnd,
       cancelAtPeriodEnd,
       isActive,
-      isBeta: betaAccess,
+      isBeta: betaAccess && isActive && !trialAccess,
+      isTrial: trialAccess,
       refundEligibleUntil,
       refundEligible,
     });

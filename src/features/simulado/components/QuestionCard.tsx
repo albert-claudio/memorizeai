@@ -1,13 +1,15 @@
 
 import type { Questao } from '../services/simuladoService';
+import { QuestionReportButton } from './QuestionReportButton';
 
 interface QuestionCardProps {
+  simuladoId: string;
   question: Questao;
   selectedAlternative: string | null;
   onSelect: (id: string, alt: string) => void;
 }
 
-export function QuestionCard({ question, selectedAlternative, onSelect }: QuestionCardProps) {
+export function QuestionCard({ simuladoId, question, selectedAlternative, onSelect }: QuestionCardProps) {
   // Detect CESPE Certo/Errado format: alternativa_a = 'Certo', alternativa_b = 'Errado', c/d/e empty
   const isCespe = question.alternativa_a === 'Certo'
     && question.alternativa_b === 'Errado'
@@ -66,6 +68,13 @@ export function QuestionCard({ question, selectedAlternative, onSelect }: Questi
         }}>
           {question.enunciado}
         </p>
+
+        <QuestionReportButton
+          simuladoId={simuladoId}
+          questaoId={question.id}
+          selectedAnswer={selectedAlternative}
+          context="during_simulado"
+        />
       </div>
 
       <div style={{

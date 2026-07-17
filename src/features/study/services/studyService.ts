@@ -127,5 +127,30 @@ export const studyService = {
       console.error('Error logging review:', error);
       // Don't throw here to avoid blocking the user flow
     }
+  },
+
+  async triggerFsrsCalibration() {
+    const response = await fetch('/api/fsrs/calibrate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+      keepalive: true,
+    });
+
+    if (!response.ok) {
+      let message = 'Falha ao calibrar FSRS';
+      try {
+        const body = await response.json();
+        if (body?.error) message = body.error;
+      } catch {
+        // Keep the default message.
+      }
+      throw new Error(message);
+    }
+
+    return response.json() as Promise<
+      | { status: 'skipped'; reason: string }
+      | { status: 'calibrated'; reviewCount: number; improved: boolean }
+    >;
   }
 };

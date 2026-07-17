@@ -193,6 +193,66 @@ describe('computeDashboardStats', () => {
     const constitucional = result.weakTopics.find(t => t.label === 'Constitucional');
     expect(constitucional).toBeDefined();
     expect(constitucional!.isWeak).toBe(true);
+    expect(constitucional!.primaryIssue).toBe('high_error');
+    expect(constitucional!.recommendation).toMatch(/Constitucional/);
+  });
+
+  it('marks low review volume separately from real weakness', () => {
+    const deck = makeDeck({ materia: 'Tributario', tema: null });
+    const card = makeCard({ stability: 5, lapses: 0 });
+    const reviews = [
+      makeReview({ grade: 0, reviewed_at: NOW - DAY }),
+    ];
+
+    const result = computeDashboardStats([deck], [card], reviews, [], 0, NOW, 0, START_OF_DAY);
+    const topic = result.weakTopics.find(t => t.label === 'Tributario');
+
+    expect(topic).toBeDefined();
+    expect(topic!.confidence).toBe('low');
+    expect(topic!.primaryIssue).toBe('low_volume');
+    expect(topic!.isWeak).toBe(false);
+  });
+
+  it('detects worsening topic trend when recent error rate rises above 30d baseline', () => {
+    const deck = makeDeck({ materia: 'Penal', tema: null });
+    const card = makeCard();
+    const reviews = [
+      makeReview({ grade: 0, reviewed_at: NOW - DAY }),
+      makeReview({ grade: 2, reviewed_at: NOW - 2 * DAY }),
+      makeReview({ grade: 2, reviewed_at: NOW - 3 * DAY }),
+      ...Array.from({ length: 9 }, (_, i) =>
+        makeReview({ grade: 2, reviewed_at: NOW - (10 + i) * DAY }),
+      ),
+    ];
+
+    const result = computeDashboardStats([deck], [card], reviews, [], 0, NOW, 0, START_OF_DAY);
+    const topic = result.weakTopics.find(t => t.label === 'Penal');
+
+    expect(topic).toBeDefined();
+    expect(topic!.trendDelta).toBeGreaterThan(15);
+    expect(topic!.primaryIssue).toBe('worsening');
+    expect(topic!.accuracy7d).toBe(66.7);
+  });
+
+  it('ranks weakTopics by combined weakness signals, not only recent error rate', () => {
+    const decks = [
+      makeDeck({ id: 'deck_error', materia: 'Administrativo', tema: null }),
+      makeDeck({ id: 'deck_stability', materia: 'Processo Civil', tema: null }),
+    ];
+    const cards = [
+      makeCard({ id: 'card_error', deck_id: 'deck_error', lapses: 0, difficulty: 5, stability: 5 }),
+      makeCard({ id: 'card_stability', deck_id: 'deck_stability', lapses: 8, difficulty: 8, stability: 1 }),
+    ];
+    const reviews = [
+      ...Array.from({ length: 7 }, () => makeReview({ card_id: 'card_error', grade: 0, reviewed_at: NOW - DAY })),
+      ...Array.from({ length: 13 }, () => makeReview({ card_id: 'card_error', grade: 2, reviewed_at: NOW - DAY })),
+    ];
+
+    const result = computeDashboardStats(decks, cards, reviews, [], 0, NOW, 0, START_OF_DAY);
+
+    expect(result.weakTopics[0].label).toBe('Processo Civil');
+    expect(result.weakTopics[0].isWeak).toBe(true);
+    expect(result.weakTopics[1].label).toBe('Administrativo');
   });
 
   it('picks reinforcement from the top focusDeck with correct primary driver', () => {
@@ -294,6 +354,15 @@ describe('computeDashboardStats', () => {
       accuracy: 0.5,
       reviews: 2,
     });
+  });
+
+  it('builds a 14-day performance series when seriesDays is 14', () => {
+    const result = computeDashboardStats([], [], [], [], 0, NOW, 0, START_OF_DAY, 14);
+
+    expect(result.performanceSeries).toHaveLength(14);
+    expect(result.performanceSeries.every((point) => point.accuracy === null && point.reviews === 0)).toBe(
+      true,
+    );
   });
 
   it('does not crash with null arrays from supabase', () => {

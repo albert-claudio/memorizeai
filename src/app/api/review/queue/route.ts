@@ -3,12 +3,21 @@ import { createClient } from '@/lib/supabase/server';
 import { buildReviewQueue } from '@/lib/review-planner/build-review-queue';
 import { isSafeEntityId } from '@/lib/security/input-validation';
 import { attachCardSourceReferences } from '@/lib/cards/source-references';
+import { getEffectiveProAccess } from '@/lib/billing/effective-pro-access';
 import type { ReviewPlannerPreferences } from '@/lib/review-planner/types';
 import type { Card, Deck, ExamTarget } from '@/lib/types';
 
 function normalizePreferences(
   data: { prioritize_weak?: boolean | null; prioritize_near_exam?: boolean | null } | null,
+  isPro: boolean,
 ): ReviewPlannerPreferences {
+  if (!isPro) {
+    return {
+      prioritizeWeak: false,
+      prioritizeNearExam: false,
+    };
+  }
+
   return {
     prioritizeWeak: Boolean(data?.prioritize_weak),
     prioritizeNearExam: Boolean(data?.prioritize_near_exam),
@@ -77,6 +86,7 @@ export async function GET(request: Request) {
     }
 
     const now = Date.now();
+    const isPro = await getEffectiveProAccess(supabase, user.id);
 
     const [{ data: cards, error: cardsError }, { data: preferences }, examTarget] = await Promise.all([
       supabase
@@ -90,7 +100,7 @@ export async function GET(request: Request) {
         .select('prioritize_weak, prioritize_near_exam')
         .eq('user_id', user.id)
         .maybeSingle(),
-      getActiveExamTarget(supabase, user.id, deckId),
+      isPro ? getActiveExamTarget(supabase, user.id, deckId) : Promise.resolve(null),
     ]);
 
     if (cardsError) {
@@ -101,7 +111,7 @@ export async function GET(request: Request) {
     const queue = buildReviewQueue({
       cards: (cards ?? []) as Card[],
       now,
-      preferences: normalizePreferences(preferences),
+      preferences: normalizePreferences(preferences, isPro),
       examTarget,
     });
 

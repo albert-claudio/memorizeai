@@ -110,6 +110,8 @@ export function verifyWebhookTimestamp(
 export interface IdempotencyResult {
   isNew: boolean;
   reason?: string;
+  /** When true, the idempotency store is unavailable — callers must fail closed (500). */
+  unavailable?: boolean;
 }
 
 /**
@@ -172,7 +174,11 @@ export async function checkEventIdempotencyAtomic(
     return { isNew: true };
   } catch (error) {
     console.error('[Webhook Security] Idempotency check failed:', error);
-    return { isNew: true }; // Fail-open to avoid blocking legitimate events
+    return {
+      isNew: false,
+      unavailable: true,
+      reason: 'Idempotency check unavailable',
+    };
   }
 }
 
