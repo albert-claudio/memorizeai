@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { createLogger } from '@/lib/logger';
 import { authenticateCronRequest } from '@/lib/security/cron-auth';
+import { dispatchOperationalAlert } from '@/lib/operational-alerts';
 
 const WINDOW_MS = 30 * 60 * 1000;
 
@@ -14,7 +15,7 @@ const THRESHOLDS = {
  * GET /api/cron/alerts
  *
  * Scheduled job (every 30 minutes).
- * Scans for anomalies in runs, webhooks, and dispatches aggregated Discord alerts.
+ * Scans for anomalies in runs and webhooks, then dispatches aggregated alerts.
  */
 export async function GET(request: NextRequest) {
   const logger = createLogger({ component: 'alerts-cron' });
@@ -41,7 +42,7 @@ export async function GET(request: NextRequest) {
     .gt('updated_at', cutoff);
 
   if ((runErrorCount ?? 0) > THRESHOLDS.runErrors) {
-    alerts.push(`🔴 **${runErrorCount} runs com erro** nos últimos 30 min (threshold: ${THRESHOLDS.runErrors})`);
+    alerts.push(`[CRITICO] ${runErrorCount} runs com erro nos ultimos 30 min (limite: ${THRESHOLDS.runErrors})`);
     logger.warn('alert_run_errors', { count: runErrorCount });
   }
 
@@ -52,7 +53,7 @@ export async function GET(request: NextRequest) {
     .lt('created_at', cutoff);
 
   if ((stuckCount ?? 0) > 0) {
-    alerts.push(`⚠️ **${stuckCount} runs travadas** há mais de 30 min`);
+    alerts.push(`[ATENCAO] ${stuckCount} runs travadas ha mais de 30 min`);
     logger.warn('alert_stuck_runs', { count: stuckCount });
   }
 
@@ -64,7 +65,7 @@ export async function GET(request: NextRequest) {
     .gt('created_at', cutoffISO);
 
   if ((webhookFailCount ?? 0) > THRESHOLDS.webhookFailures) {
-    alerts.push(`🔴 **${webhookFailCount} webhooks falhando** nos últimos 30 min (threshold: ${THRESHOLDS.webhookFailures})`);
+    alerts.push(`[CRITICO] ${webhookFailCount} webhooks falhando nos ultimos 30 min (limite: ${THRESHOLDS.webhookFailures})`);
     logger.warn('alert_webhook_failures', { count: webhookFailCount });
   }
 
@@ -75,23 +76,24 @@ export async function GET(request: NextRequest) {
     alertsSent: alerts.length,
   };
 
+  let delivery = null;
   if (alerts.length > 0) {
-    const alertUrl = process.env.WEBHOOK_ALERT_URL;
-    if (alertUrl) {
-      const message = `📊 **Alerta Operacional - Vimens**\n\n${alerts.join('\n')}\n\n_Verificado em ${new Date().toISOString()}_`;
+    const message = [
+      'Alerta operacional - Vimens',
+      '',
+      ...alerts,
+      '',
+      `Verificado em ${new Date().toISOString()}`,
+    ].join('\n');
+    delivery = await dispatchOperationalAlert(message);
 
-      fetch(alertUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: message }),
-        signal: AbortSignal.timeout(5000),
-      }).catch(() => {});
-    }
-
-    logger.warn('alerts_dispatched', summary);
+    const log = delivery.telegram.ok || delivery.webhook.ok
+      ? logger.warn.bind(logger)
+      : logger.error.bind(logger);
+    log('alerts_dispatched', { ...summary, delivery });
   } else {
     logger.info('alerts_all_clear', summary);
   }
 
-  return NextResponse.json({ ok: true, ...summary });
+  return NextResponse.json({ ok: true, ...summary, delivery });
 }

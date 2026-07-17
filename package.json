@@ -17,8 +17,11 @@
     "test:live-queue-load": "vitest run src/app/api/tests/live-queue-load-validate.test.ts",
     "eval:oab:calibrate": "node scripts/eval-oab-calibration.mjs",
     "eval:oab:blind": "node scripts/eval-oab-blind-test-prep.mjs",
+    "eval:oab:blind:score": "node scripts/eval-oab-blind-test-score.mjs",
+    "eval:oab:export": "node scripts/export-oab-generated-questions.mjs",
     "public-launch:preflight": "node --env-file=.env scripts/ci/staging-preflight.mjs",
-    "stripe:staging:validate": "npm run public-launch:preflight && node --env-file=.env scripts/ci/live-integration-smoke.mjs --billing-staging-validate"
+    "stripe:staging:validate": "npm run public-launch:preflight && node --env-file=.env scripts/ci/live-integration-smoke.mjs --billing-staging-validate",
+    "stripe:production:preflight": "node --env-file=.env scripts/ci/production-billing-preflight.mjs"
   },
   "dependencies": {
     "@sentry/nextjs": "^10.46.0",
